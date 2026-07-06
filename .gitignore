@@ -1,0 +1,33 @@
+# Zig build outputs
+zig-out/
+.zig-cache/
+zig-cache/
+
+# Object files / libraries / executables
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.pdb
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude Code local state
+.claude/
+
+# Offline-queue test scratch dir (when TEMP is unset it falls back to cwd)
+ph_offline_test/
+
+# WASM test build outputs (emitted next to the harness by `zig build test-wasm`)
+tests/wasm/test_wasm.mjs
+tests/wasm/test_wasm.wasm

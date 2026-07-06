@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  # Native build + tests on all three desktop platforms. Windows exercises the
+  # WinHTTP TLS path; Linux/macOS confirm the pthreads + POSIX-sockets paths
+  # compile and the suite is green (tests use the mock transport, no network).
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+      - name: Build
+        run: zig build
+      - name: Test
+        run: zig build test
+
+  # WASM backend: compile the window.posthog shim with emcc and run the Node
+  # parity harness (mocked window.posthog).
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+      - name: Build + test WASM
+        run: zig build test-wasm

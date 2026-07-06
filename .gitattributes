@@ -1,2 +1,15 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize text files to LF in the index and working tree on every platform.
+# The sources are written LF-only; pinning eol=lf keeps Windows checkouts from
+# flipping to CRLF and showing every file as modified.
+* text=auto eol=lf
+
+# Explicit binaries — never LF-normalize.
+*.png binary
+*.ico binary
+*.a binary
+*.lib binary
+*.wasm binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
