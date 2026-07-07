@@ -2,6 +2,7 @@
 #include "ph_gzip.h"
 #include "ph_tls.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -156,13 +157,37 @@ static int parse_status(const char *resp, size_t n) {
     return (resp[i] - '0') * 100 + (resp[i + 1] - '0') * 10 + (resp[i + 2] - '0');
 }
 
+/* Copy the value of a "Retry-After:" header (case-insensitive, matched at a
+ * line start) out of a raw response head into `out` (trimmed, NUL-terminated).
+ * `out[0]` is set to '\0' when the header is absent. */
+static void scan_retry_after(const char *buf, size_t n, char *out, size_t cap) {
+    static const char key[] = "retry-after:";
+    const size_t klen = sizeof(key) - 1;
+    size_t i;
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    for (i = 0; i + klen <= n; i++) {
+        size_t k = 0;
+        if (i != 0 && buf[i - 1] != '\n') continue; /* header names start a line */
+        while (k < klen && (char)tolower((unsigned char)buf[i + k]) == key[k]) k++;
+        if (k == klen) {
+            size_t j = i + klen, o = 0;
+            while (j < n && (buf[j] == ' ' || buf[j] == '\t')) j++;
+            while (j < n && buf[j] != '\r' && buf[j] != '\n' && o + 1 < cap)
+                out[o++] = buf[j++];
+            out[o] = '\0';
+            return;
+        }
+    }
+}
+
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
  * terminator) is copied into it (NUL-terminated, capped) — used for /flags/;
  * otherwise only the status line is read (the capture path discards the body).
  * Returns the HTTP status, or <0 on failure. */
 static int do_http(const char *url, const char *body, size_t body_len,
                    int timeout_ms, char *out, size_t out_cap,
-                   const char *content_encoding) {
+                   const char *content_encoding, ph_send_meta *meta) {
     ph_url u;
     ph_strbuf req;
     struct addrinfo hints, *res = NULL, *ai;
@@ -178,7 +203,9 @@ static int do_http(const char *url, const char *body, size_t body_len,
         return out ? ph_tls_fetch(u.host, atoi(u.port), u.path, body, body_len,
                                   timeout_ms, out, out_cap)
                    : ph_tls_send(u.host, atoi(u.port), u.path, body, body_len,
-                                 timeout_ms, content_encoding);
+                                 timeout_ms, content_encoding,
+                                 meta ? meta->retry_after : NULL,
+                                 meta ? sizeof meta->retry_after : 0);
 
     winsock_once();
 
@@ -220,11 +247,16 @@ static int do_http(const char *url, const char *body, size_t body_len,
     }
 
     if (!out) {
-        char head[256];
+        /* Read enough of the head to catch the status line and any Retry-After.
+         * A single segment carries both for the small 429/503 responses that
+         * matter here; the status line is always first. */
+        char head[1024];
         int n = (int)recv(s, head, (int)sizeof(head) - 1, 0);
         if (n > 0) {
             head[n] = '\0';
             status = parse_status(head, (size_t)n);
+            if (meta) scan_retry_after(head, (size_t)n, meta->retry_after,
+                                       sizeof meta->retry_after);
         }
     } else {
         /* Read the whole response, parse the status, copy the body past the
@@ -258,7 +290,7 @@ static int do_http(const char *url, const char *body, size_t body_len,
 }
 
 static int http_send(void *self, const char *url, const char *body,
-                     size_t body_len, int timeout_ms) {
+                     size_t body_len, int timeout_ms, ph_send_meta *meta) {
     char *gz = NULL;
     size_t gzlen = 0;
     const char *enc = NULL;
@@ -270,7 +302,7 @@ static int http_send(void *self, const char *url, const char *body,
         body_len = gzlen;
         enc = "gzip";
     }
-    rc = do_http(url, body, body_len, timeout_ms, NULL, 0, enc);
+    rc = do_http(url, body, body_len, timeout_ms, NULL, 0, enc, meta);
     free(gz);
     return rc;
 }
@@ -278,7 +310,7 @@ static int http_send(void *self, const char *url, const char *body,
 static int http_fetch(void *self, const char *url, const char *body,
                       size_t body_len, int timeout_ms, char *out, size_t out_cap) {
     (void)self;
-    return do_http(url, body, body_len, timeout_ms, out, out_cap, NULL);
+    return do_http(url, body, body_len, timeout_ms, out, out_cap, NULL, NULL);
 }
 
 ph_transport ph_http_transport_create(void) {

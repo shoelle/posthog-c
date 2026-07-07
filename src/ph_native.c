@@ -31,8 +31,9 @@ static void build_batch_url(char *out, size_t cap) {
     snprintf(out, cap, "%.*s/batch/", (int)n, g_ph.api_host);
 }
 
-/* POST one already-serialized batch body. Returns the HTTP-ish status. */
-static int post_body(const char *body, size_t len) {
+/* POST one already-serialized batch body. Fills `meta` (Retry-After, ...) when
+ * non-NULL. Returns the HTTP-ish status. */
+static int post_body(const char *body, size_t len, ph_send_meta *meta) {
     char url[PH_HOST_CAP + 16];
     ph_transport t;
     build_batch_url(url, sizeof(url));
@@ -40,7 +41,21 @@ static int post_body(const char *body, size_t len) {
     t = g_ph.transport;
     ph_mutex_unlock(&g_ph.flush_lock);
     if (!t.send) return -1;
-    return t.send(t.self, url, body, len, g_ph.request_timeout_ms);
+    return t.send(t.self, url, body, len, g_ph.request_timeout_ms, meta);
+}
+
+/* POST a batch and fold any server backpressure (429, or 503 with Retry-After)
+ * into the rate limiter, so the next drain holds off instead of hammering a
+ * throttled endpoint. Returns the HTTP-ish status. */
+static int post_and_note(const char *body, size_t len) {
+    ph_send_meta meta;
+    int status;
+    memset(&meta, 0, sizeof meta);
+    status = post_body(body, len, &meta);
+    if (status == 429 || status == 503)
+        ph_ratelimit_note_response(&g_ph.rl, status, meta.retry_after,
+                                   ph_now_mono_ns(), ph_now_wall_ns());
+    return status;
 }
 
 /* --- Offline spill file (§6) ------------------------------------------
@@ -164,7 +179,7 @@ static void offline_replay(void) {
             size_t linelen = i - line_start;
             int keep_line = failed;
             if (!failed) {
-                int status = post_body(buf + line_start, linelen);
+                int status = post_and_note(buf + line_start, linelen);
                 if (status < 200 || status >= 300) {
                     failed = 1;
                     keep_line = 1;
@@ -318,8 +333,10 @@ static void send_batch(ph_event *evs, int n) {
 
     /* Retry only failures a retry can plausibly fix: 5xx, timeouts, and network
      * errors (status < 0). 2xx succeeded; 4xx is a deterministic client error
-     * (bad key/body) that won't change. Exponential backoff between attempts,
-     * interruptible on shutdown. */
+     * (bad key/body) that won't change. A 429 (or a 503 carrying Retry-After)
+     * is server backpressure: post_and_note arms the limiter, and we stop
+     * retrying rather than hammering the throttle. Exponential backoff between
+     * attempts, interruptible on shutdown. */
     attempts = g_ph.max_retries >= 0 ? g_ph.max_retries + 1 : 1;
     for (attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0) {
@@ -328,9 +345,10 @@ static void send_batch(ph_event *evs, int n) {
             if (backoff > 2000) backoff = 2000;
             if (sender_backoff_wait(backoff)) break; /* shutdown requested */
         }
-        status = post_body(body.data ? body.data : "", body.len);
+        status = post_and_note(body.data ? body.data : "", body.len);
         if (status >= 200 && status < 300) break; /* delivered */
         if (status >= 400 && status < 500) break; /* client error: won't change */
+        if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break; /* backpressure */
     }
     if (status < 200 || status >= 300) {
         if (g_ph.offline_path[0]) {
@@ -355,12 +373,18 @@ static void drain(ph_event *scratch) {
     g_ph.sending = 1;
     ph_mutex_unlock(&g_ph.flush_lock);
 
-    offline_replay();
-
-    for (;;) {
-        int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
-        if (n == 0) break;
-        send_batch(scratch, n);
+    /* Under server backpressure (429/Retry-After) hold everything: no replay,
+     * no sends. Events stay in the bounded ring (drop-oldest on overflow), so
+     * we neither block the caller nor waste a request against the throttle. */
+    if (!ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) {
+        offline_replay();
+        for (;;) {
+            int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
+            if (n == 0) break;
+            send_batch(scratch, n);
+            /* A batch just tripped the limiter — stop, hold the rest queued. */
+            if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break;
+        }
     }
 
     ph_mutex_lock(&g_ph.flush_lock);
@@ -394,6 +418,16 @@ static void sender_main(void *arg) {
         stop = g_ph.stop;
         ph_mutex_unlock(&g_ph.flush_lock);
         if (stop) break;
+        /* If the server throttled us, park until the window clears rather than
+         * waking every interval only for drain() to skip an already-full queue.
+         * Interruptible on shutdown. */
+        {
+            uint64_t rem = ph_ratelimit_remaining_ms(&g_ph.rl, ph_now_mono_ns());
+            if (rem > 0) {
+                int ms = rem > 2000000000u ? 2000000000 : (int)rem;
+                if (sender_backoff_wait(ms)) break;
+            }
+        }
     }
     drain(scratch); /* final drain after the stop signal */
     free(scratch);
@@ -402,6 +436,7 @@ static void sender_main(void *arg) {
 void ph__sender_start(void) {
     g_ph.stop = 0;
     g_ph.sending = 0;
+    ph_ratelimit_init(&g_ph.rl);
     if (ph_thread_start(&g_ph.sender, sender_main, NULL) == 0) {
         g_ph.sender_running = 1;
     } else {

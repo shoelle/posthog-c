@@ -15,6 +15,7 @@ void suite_jsonparse(void);
 void suite_flags(void);
 void suite_gzip(void);
 void suite_http(void);
+void suite_ratelimit(void);
 
 int main(void) {
     printf("posthog-c test suite\n");
@@ -31,6 +32,7 @@ int main(void) {
     printf("[flags]\n");     suite_flags();
     printf("[gzip]\n");      suite_gzip();
     printf("[http]\n");      suite_http();
+    printf("[ratelimit]\n"); suite_ratelimit();
 
     printf("\n%d checks, %d failure%s\n", g_checks, g_failures,
            g_failures == 1 ? "" : "s");

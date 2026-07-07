@@ -19,7 +19,8 @@ int ph_tls_available(void) { return 1; }
  * (NUL-terminated, capped). Returns the HTTP status, or <0 on failure. */
 static int do_tls(const char *host, int port, const char *path, const char *body,
                   size_t body_len, int timeout_ms, char *out, size_t out_cap,
-                  const char *content_encoding) {
+                  const char *content_encoding, char *retry_after,
+                  size_t retry_after_cap) {
     wchar_t whost[256];
     wchar_t wpath[1024];
     HINTERNET ses = NULL, con = NULL, req = NULL;
@@ -28,6 +29,7 @@ static int do_tls(const char *host, int port, const char *path, const char *body
     int rc = -1;
 
     if (out && out_cap) out[0] = '\0';
+    if (retry_after && retry_after_cap) retry_after[0] = '\0';
     if (!to_wide(host, whost, 256)) return -1;
     if (!to_wide((path && path[0]) ? path : "/", wpath, 1024)) return -1;
 
@@ -65,6 +67,19 @@ static int do_tls(const char *host, int port, const char *path, const char *body
                             WINHTTP_NO_HEADER_INDEX))
         rc = (int)status;
 
+    /* Retry-After (if present) — the raw header value, parsed by the limiter.
+     * WinHTTP returns it as a string; a small buffer suffices (seconds or a
+     * ~29-char HTTP-date). */
+    if (retry_after && retry_after_cap > 0) {
+        wchar_t wra[64];
+        DWORD wsz = sizeof(wra);
+        if (WinHttpQueryHeaders(req, WINHTTP_QUERY_RETRY_AFTER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, wra, &wsz,
+                                WINHTTP_NO_HEADER_INDEX))
+            WideCharToMultiByte(CP_UTF8, 0, wra, -1, retry_after,
+                                (int)retry_after_cap, NULL, NULL);
+    }
+
     if (out && out_cap > 1) {
         DWORD total = 0, avail = 0, got = 0;
         for (;;) {
@@ -88,13 +103,16 @@ done:
 }
 
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
-                size_t body_len, int timeout_ms, const char *content_encoding) {
-    return do_tls(host, port, path, body, body_len, timeout_ms, NULL, 0, content_encoding);
+                size_t body_len, int timeout_ms, const char *content_encoding,
+                char *retry_after, size_t retry_after_cap) {
+    return do_tls(host, port, path, body, body_len, timeout_ms, NULL, 0,
+                  content_encoding, retry_after, retry_after_cap);
 }
 
 int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
                  size_t body_len, int timeout_ms, char *out, size_t out_cap) {
-    return do_tls(host, port, path, body, body_len, timeout_ms, out, out_cap, NULL);
+    return do_tls(host, port, path, body, body_len, timeout_ms, out, out_cap, NULL,
+                  NULL, 0);
 }
 
 #else /* non-Windows: TLS backend not yet vendored (v0.2 is Windows-first) */
@@ -102,7 +120,8 @@ int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
 int ph_tls_available(void) { return 0; }
 
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
-                size_t body_len, int timeout_ms, const char *content_encoding) {
+                size_t body_len, int timeout_ms, const char *content_encoding,
+                char *retry_after, size_t retry_after_cap) {
     (void)host;
     (void)port;
     (void)path;
@@ -110,6 +129,7 @@ int ph_tls_send(const char *host, int port, const char *path, const char *body,
     (void)body_len;
     (void)timeout_ms;
     (void)content_encoding;
+    if (retry_after && retry_after_cap) retry_after[0] = '\0';
     return -1;
 }
 

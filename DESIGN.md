@@ -137,6 +137,19 @@ customer's own integration reference:
   refills from the monotonic tick capture already reads, so the hot path stays
   wall-clock/RNG/heap-free. Rate rejections + ring-overflow drops surface via
   `ph_dropped_events()`.
+- **Server backpressure.** The client bucket caps what we *emit*; the sender
+  also honors what the server *asks for*. On HTTP `429` (or `503` carrying a
+  `Retry-After`, per RFC 9110) it parses the header — delay-seconds or an
+  HTTP-date — arms a monotonic hold, and skips draining until the window clears,
+  so a throttled endpoint isn't hammered batch-after-batch. Held events wait in
+  the ring (drop-oldest on overflow); a small clock-derived jitter de-syncs a
+  fleet throttled at once. The logic is pure and unit-tested
+  ([`src/ph_ratelimit.c`](src/ph_ratelimit.c)); transports surface the raw header
+  through the [`ph_transport`](src/ph_internal.h) seam. Note PostHog ingestion
+  signals event *quota* as `200` + a `{"quota_limited": […]}` body (no
+  `Retry-After`), so this mainly earns its keep behind an `/ingest` proxy
+  (Cloudflare/nginx/gateway) that emits standard `429`s; the `200`-body path is a
+  separate, planned companion.
 - **Anonymous by default**, `respect_dnt` (planned), and a master `enabled`
   kill-switch (`enabled = 0` makes every call a no-op with no thread).
 - Designed for privacy-sensitive apps, including those serving minors: the SDK
@@ -148,7 +161,7 @@ customer's own integration reference:
 | Stage | Adds |
 |---|---|
 | **v0.1** (done) | C ABI, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
-| **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, offline disk queue (spill/replay), `ph_dropped_events()` |
+| **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After`), offline disk queue (spill/replay), `ph_dropped_events()` |
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP → real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |

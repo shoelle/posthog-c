@@ -13,6 +13,7 @@ const c_sources = [_][]const u8{
     "src/ph_serialize.c",
     "src/ph_jsonval.c",
     "src/ph_flags.c",
+    "src/ph_ratelimit.c",
     "src/ph_http.c",
     "src/ph_tls.c",
     "src/ph_core.c",
@@ -40,6 +41,7 @@ const test_sources = [_][]const u8{
     "tests/test_flags.c",
     "tests/test_gzip.c",
     "tests/test_http.c",
+    "tests/test_ratelimit.c",
 };
 
 fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {

@@ -10,6 +10,7 @@
 
 #include "posthog.h"
 #include "ph_queue.h"
+#include "ph_ratelimit.h"
 #include "ph_thread.h"
 
 #include <stdatomic.h>
@@ -74,13 +75,25 @@
 /* --- Transport seam --------------------------------------------------- */
 
 /*
+ * Out-of-band response metadata a transport may surface alongside the status.
+ * The caller zero-initializes it; a transport fills what it can and leaves the
+ * rest empty. Kept separate from the status so the common path stays a plain
+ * int return. Currently just the raw Retry-After header (server backpressure).
+ */
+typedef struct ph_send_meta {
+    char retry_after[64]; /* raw Retry-After header value; "" if absent */
+} ph_send_meta;
+
+/*
  * A transport ships one serialized batch body. The default is plaintext/HTTP
  * (ph_http); tests swap in a capturing mock. `send` returns an HTTP-ish status
- * (2xx => success); <0 means a transport-level failure (offline/timeout).
+ * (2xx => success); <0 means a transport-level failure (offline/timeout). When
+ * `meta` is non-NULL the transport fills it with response metadata (e.g. the
+ * Retry-After header) for the sender's rate limiter; pass NULL to ignore it.
  */
 typedef struct ph_transport {
     int (*send)(void *self, const char *url, const char *body, size_t body_len,
-                int timeout_ms);
+                int timeout_ms, ph_send_meta *meta);
     /* Like send, but also captures the response body into out (NUL-terminated,
      * capped at out_cap) — used for /flags/. NULL if unsupported. */
     int (*fetch)(void *self, const char *url, const char *body, size_t body_len,
@@ -161,6 +174,8 @@ typedef struct ph_ctx {
     /* Delivery pipeline. */
     ph_queue queue;
     ph_transport transport;
+    ph_ratelimit rl; /* server-directed backpressure (429/Retry-After);
+                      * touched only by the sender thread */
 
     /* Sender thread + flush coordination. The sender parks on the queue's own
      * condition variable; flush_lock/idle_cond only coordinate the drained

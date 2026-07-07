@@ -13,6 +13,7 @@ static int g_count;
 static int g_status = 200;
 static char *g_flags_response;
 static char g_last_fetch_url[512];
+static char g_retry_after[64];
 
 static void ensure(void) {
     if (!g_inited) {
@@ -22,7 +23,7 @@ static void ensure(void) {
 }
 
 static int mock_send(void *self, const char *url, const char *body, size_t len,
-                     int timeout_ms) {
+                     int timeout_ms, ph_send_meta *meta) {
     int s;
     (void)self;
     (void)url;
@@ -36,6 +37,12 @@ static int mock_send(void *self, const char *url, const char *body, size_t len,
             copy[len] = '\0';
             g_bodies[g_count++] = copy;
         }
+    }
+    if (meta) {
+        size_t n = strlen(g_retry_after);
+        if (n >= sizeof(meta->retry_after)) n = sizeof(meta->retry_after) - 1;
+        memcpy(meta->retry_after, g_retry_after, n);
+        meta->retry_after[n] = '\0';
     }
     s = g_status;
     ph_mutex_unlock(&g_lock);
@@ -104,6 +111,7 @@ void mock_reset(void) {
     g_count = 0;
     g_status = 200;
     g_last_fetch_url[0] = '\0';
+    g_retry_after[0] = '\0';
     free(g_flags_response);
     g_flags_response = NULL;
     ph_mutex_unlock(&g_lock);
@@ -113,6 +121,17 @@ void mock_set_status(int status) {
     ensure();
     ph_mutex_lock(&g_lock);
     g_status = status;
+    ph_mutex_unlock(&g_lock);
+}
+
+void mock_set_retry_after(const char *value) {
+    size_t n;
+    ensure();
+    ph_mutex_lock(&g_lock);
+    n = value ? strlen(value) : 0;
+    if (n >= sizeof(g_retry_after)) n = sizeof(g_retry_after) - 1;
+    if (n) memcpy(g_retry_after, value, n);
+    g_retry_after[n] = '\0';
     ph_mutex_unlock(&g_lock);
 }
 
