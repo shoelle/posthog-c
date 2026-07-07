@@ -121,9 +121,11 @@ customer's own integration reference:
 
 ## 5. Privacy & reliability (parity across native + wasm)
 
-- **`before_send(event, props) -> keep|drop`** runs on every capture/exception
-  event on the sender thread before serialization: mutate `props` to redact, or
-  return 0 to drop the event. Implemented. A reference scrubber (strip tokens,
+- **`before_send(event, props) -> keep|drop`** runs before serialization:
+  product events run on the sender thread, while exception events scrub before
+  enqueue so structured exception text can be redacted before `$exception_list`
+  is built. Mutate `props` to redact, or return 0 to drop the event. Implemented.
+  A reference scrubber (strip tokens,
   IPs, emails, URL query strings) with shared test vectors follows, so native
   and wasm can't drift.
 - **`property_denylist`** strips named keys from every event in the same

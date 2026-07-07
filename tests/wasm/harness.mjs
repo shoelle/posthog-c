@@ -16,6 +16,10 @@ globalThis.window = {
         reset: () => calls.push({ fn: "reset" }),
         register: (props) => calls.push({ fn: "register", props }),
         alias: (a, b) => calls.push({ fn: "alias", a, b }),
+        captureException: (err, props) => calls.push({ fn: "captureException", name: err.name, message: err.message, props }),
+        isFeatureEnabled: (key) => key === "missing" ? undefined : key === "off" ? false : true,
+        getFeatureFlag: (key) => key === "off" ? false : undefined,
+        getFeatureFlagPayload: () => null,
     },
 };
 
@@ -41,6 +45,11 @@ check(cap && cap.props.weapon === "sword", "string prop weapon=sword");
 check(cap && cap.props.level === 3, "int prop level=3");
 check(cap && cap.props.score === 1.5, "double prop score=1.5 (serializer parity)");
 check(cap && cap.props.alive === true, "bool prop alive=true");
+check(cap && cap.props.super_keep === "yes", "WASM super prop merged before scrub");
+check(cap && cap.props.scrubbed === true, "before_send added scrubbed=true");
+check(cap && !("token" in cap.props), "denylist stripped token");
+check(cap && !("secret" in cap.props), "before_send stripped secret");
+check(!calls.some((c) => c.event === "drop_me"), "before_send dropped drop_me");
 
 const id = calls.find((c) => c.fn === "identify");
 check(id && id.id === "acct-9", "identify id=acct-9");
@@ -48,6 +57,14 @@ check(id && id.props && id.props.plan === "pro", "identify $set prop plan=pro");
 
 const g = calls.find((c) => c.fn === "group");
 check(g && g.type === "game" && g.key === "asteroids", "group game/asteroids");
+
+check(calls.some((c) => c.event === "missing_fallback_true"), "missing flag honored fallback=true");
+check(calls.some((c) => c.event === "false_flag_ok"), "false flag resolved as PH_OK value");
+
+const exc = calls.find((c) => c.fn === "captureException");
+check(exc && exc.name === "NativeAssertion", "exception type reached captureException");
+check(exc && exc.message === "redacted", "exception message was scrubbed");
+check(exc && exc.props && exc.props.scrubbed === true, "exception props were scrubbed");
 
 console.log(`\nwasm harness: ${calls.length} posthog calls, ${checks} checks, ${failures} failures`);
 process.exit(failures ? 1 : 0);

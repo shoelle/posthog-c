@@ -40,8 +40,6 @@ ph_event *ph_queue_begin_push(ph_queue *q) {
 
 void ph_queue_end_push(ph_queue *q) {
     q->size++;
-    q->woken = 1;
-    ph_cond_signal(&q->not_empty);
     ph_mutex_unlock(&q->lock);
 }
 
@@ -61,9 +59,10 @@ int ph_queue_pop_batch(ph_queue *q, ph_event *out, int max) {
 void ph_queue_wait(ph_queue *q, int threshold, int timeout_ms) {
     ph_mutex_lock(&q->lock);
     if (q->size < threshold && !q->woken) {
-        /* One bounded wait; the caller loops, so a spurious wake just means an
-         * early, harmless re-check. The `woken` latch closes the race where a
-         * wake lands between two waits. */
+        /* A producer does not wake the sender for every event: batching waits
+         * for either the threshold, the interval timeout, or an explicit wake
+         * from flush/shutdown/threshold-crossing logic. The `woken` latch closes
+         * the race where an explicit wake lands between two waits. */
         ph_cond_timedwait(&q->not_empty, &q->lock, timeout_ms);
     }
     q->woken = 0;

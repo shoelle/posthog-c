@@ -4,9 +4,11 @@
  * that payload while still stripping denylisted scalar props.
  */
 #include "posthog.h"
+#include "ph_internal.h"
 #include "mock_transport.h"
 #include "test_util.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void init_sdk(ph_config *cfg) {
@@ -18,6 +20,27 @@ static void init_sdk(ph_config *cfg) {
     cfg->flush_interval_ms = 60000;
     cfg->preload_flags = 0;
     cfg->enabled = 1;
+}
+
+static void remove_key(ph_props *props, const char *key) {
+    int i, k;
+    for (i = 0; i < props->count;) {
+        if (strcmp(props->items[i].key, key) == 0) {
+            for (k = i; k + 1 < props->count; k++) props->items[k] = props->items[k + 1];
+            props->count--;
+        } else {
+            i++;
+        }
+    }
+}
+
+static int redact_exception_message(const char *event, ph_props *props, void *user) {
+    (void)user;
+    if (strcmp(event, "$exception") == 0) {
+        remove_key(props, "$exception_message");
+        ph_props_set_str(props, "$exception_message", "redacted");
+    }
+    return 1;
 }
 
 void suite_exception(void) {
@@ -68,6 +91,82 @@ void suite_exception(void) {
         CHECK_CONTAINS(b, "\"lineno\":412");
         CHECK_CONTAINS(b, "\"function\":\"main\"");
         CHECK_CONTAINS(b, "\"$exception_level\":\"warning\""); /* handled => warning */
+        ph_shutdown();
+    }
+
+    /* --- before_send can redact raw exception text before $exception_list is built --- */
+    {
+        ph_config cfg;
+        ph_stackframe frame;
+        ph_exception ex;
+        const char *b;
+        static const char *deny[] = {"filename"};
+        init_sdk(&cfg);
+        cfg.before_send = redact_exception_message;
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 1;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+
+        memset(&frame, 0, sizeof(frame));
+        frame.function = "step";
+        frame.filename = "secret.cpp";
+        frame.in_app = 1;
+
+        memset(&ex, 0, sizeof(ex));
+        ex.type = "NativeAssertion";
+        ex.message = "secret message";
+        ex.handled = 1;
+        ex.frames = &frame;
+        ex.frame_count = 1;
+        ph_capture_exception(&ex);
+        ph_flush(2000);
+
+        b = mock_batch(0);
+        CHECK_CONTAINS(b, "\"value\":\"redacted\"");
+        CHECK_NOT_CONTAINS(b, "secret message");
+        CHECK_NOT_CONTAINS(b, "secret.cpp");
+        CHECK_NOT_CONTAINS(b, "\"filename\"");
+        ph_shutdown();
+    }
+
+    /* --- oversized frame lists are capped before entering the fixed event blob --- */
+    {
+        ph_config cfg;
+        ph_stackframe frames[PH_MAX_EXCEPTION_FRAMES + 2];
+        char names[PH_MAX_EXCEPTION_FRAMES + 2][16];
+        ph_exception ex;
+        int i;
+        init_sdk(&cfg);
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+
+        memset(frames, 0, sizeof(frames));
+        for (i = 0; i < PH_MAX_EXCEPTION_FRAMES + 2; i++) {
+            snprintf(names[i], sizeof(names[i]), "frame_%d", i);
+            frames[i].function = names[i];
+            frames[i].in_app = 1;
+        }
+
+        memset(&ex, 0, sizeof(ex));
+        ex.type = "Overflow";
+        ex.message = "many frames";
+        ex.handled = 1;
+        ex.frames = frames;
+        ex.frame_count = PH_MAX_EXCEPTION_FRAMES + 2;
+        ph_capture_exception(&ex);
+        ph_flush(2000);
+
+        {
+            char last_kept[16], first_dropped[16];
+            snprintf(last_kept, sizeof(last_kept), "frame_%d", PH_MAX_EXCEPTION_FRAMES - 1);
+            snprintf(first_dropped, sizeof(first_dropped), "frame_%d", PH_MAX_EXCEPTION_FRAMES);
+            CHECK_CONTAINS(mock_batch(0), "frame_0");
+            CHECK_CONTAINS(mock_batch(0), last_kept);
+            CHECK_NOT_CONTAINS(mock_batch(0), first_dropped);
+        }
         ph_shutdown();
     }
 

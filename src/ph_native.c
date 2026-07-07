@@ -1,9 +1,11 @@
 /*
  * ph_native.c — the background sender thread and flush coordination.
  *
- * capture() only ever touches the ring (ph_core.c). Everything expensive —
- * serialization, before_send, the network POST — happens here, off the caller
- * thread. The loop parks on the queue's condition variable until it has
+ * capture() only ever touches the ring (ph_core.c). Everything expensive for
+ * product events — serialization, before_send, the network POST — happens here,
+ * off the caller thread. Exception events pre-scrub their structured payload
+ * before enqueue so raw exception text can be redacted. The loop parks on the
+ * queue's condition variable until it has
  * flush_at events or flush_interval_ms elapses, then drains everything present
  * in max_batch-sized POSTs.
  */
@@ -263,7 +265,9 @@ static int scrub_events(ph_event *evs, int n) {
     if (!g_ph.before_send && g_ph.denylist_count == 0) return n;
     for (i = 0; i < n; i++) {
         int kind = evs[i].kind;
-        if ((kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) && !scrub_one(&evs[i]))
+        if ((evs[i].flags & PH_EVF_SCRUBBED) == 0 &&
+            (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) &&
+            !scrub_one(&evs[i]))
             continue; /* dropped by the scrubber */
         if (out != i) evs[out] = evs[i];
         out++;
@@ -273,7 +277,8 @@ static int scrub_events(ph_event *evs, int n) {
 
 static void send_batch(ph_event *evs, int n) {
     ph_strbuf body;
-    int status;
+    int status = -1;
+    int attempt, attempts;
 
     n = scrub_events(evs, n);
     if (n == 0) return; /* every event was scrubbed away */
@@ -286,7 +291,11 @@ static void send_batch(ph_event *evs, int n) {
         return;
     }
 
-    status = post_body(body.data ? body.data : "", body.len);
+    attempts = g_ph.max_retries >= 0 ? g_ph.max_retries + 1 : 1;
+    for (attempt = 0; attempt < attempts; attempt++) {
+        status = post_body(body.data ? body.data : "", body.len);
+        if (status >= 200 && status < 300) break;
+    }
     if (status < 200 || status >= 300) {
         if (g_ph.offline_path[0]) {
             offline_spill(body.data ? body.data : "", body.len);
@@ -294,7 +303,7 @@ static void send_batch(ph_event *evs, int n) {
         } else {
             ph_log(PH_LOG_WARN,
                    "batch POST failed (status %d); %d events dropped "
-                   "(set offline_path to persist; retry lands in v0.2)",
+                   "(set offline_path to persist failed batches)",
                    status, n);
         }
     }

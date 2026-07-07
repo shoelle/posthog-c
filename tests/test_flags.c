@@ -51,6 +51,7 @@ void suite_flags(void) {
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
         ph_reload_feature_flags();
+        CHECK_CONTAINS(mock_last_fetch_url(), "/flags?v=2");
 
         CHECK(ph_is_feature_enabled("my-flag", 0) == 1);
         CHECK(ph_is_feature_enabled("off-flag", 1) == 0);

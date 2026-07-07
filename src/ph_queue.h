@@ -32,7 +32,8 @@ typedef enum ph_event_kind {
 
 enum {
     PH_EVF_NO_PROFILE = 1u << 0, /* force $process_person_profile:false */
-    PH_EVF_HAS_DID = 1u << 1     /* data[] carries a distinct_id override */
+    PH_EVF_HAS_DID = 1u << 1,    /* data[] carries a distinct_id override */
+    PH_EVF_SCRUBBED = 1u << 2    /* privacy scrub already ran before enqueue */
 };
 
 /*
@@ -74,8 +75,10 @@ void ph_queue_free(ph_queue *q);
 /*
  * Producer path. begin_push locks the queue, evicts the oldest event if the
  * ring is full, and returns the slot to fill in place (no copy). The caller
- * fills the returned record, then calls end_push to publish it and wake the
- * consumer. The lock is held between the two calls, so keep filling short.
+ * fills the returned record, then calls end_push to publish it. The lock is
+ * held between the two calls, so keep filling short. The sender is woken by
+ * explicit flush/shutdown calls or by the caller once the flush threshold is
+ * reached; ordinary pushes do not defeat batching.
  */
 ph_event *ph_queue_begin_push(ph_queue *q);
 void ph_queue_end_push(ph_queue *q);

@@ -33,6 +33,16 @@
 #define PH_MAX_DENYLIST 16
 #endif
 
+/* Exception payload caps. Error capture is not the product-event hot path, but
+ * the structured $exception_list still stays bounded before it enters the fixed
+ * event blob. */
+#ifndef PH_MAX_EXCEPTION_FRAMES
+#define PH_MAX_EXCEPTION_FRAMES 4
+#endif
+#ifndef PH_EXCEPTION_FIELD_CAP
+#define PH_EXCEPTION_FIELD_CAP 96
+#endif
+
 /* Feature-flag cache (remote eval, §9). */
 #ifndef PH_MAX_FLAGS
 #define PH_MAX_FLAGS 64
@@ -106,7 +116,6 @@ typedef struct ph_ctx {
     int max_queue;
     int request_timeout_ms;
     int max_retries;
-    int gzip;
     int send_feature_flag_events;
     ph_before_send_fn before_send;
     ph_log_fn on_log;

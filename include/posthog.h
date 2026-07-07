@@ -140,10 +140,11 @@ ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
 
 /* --- before_send scrubber (§10) --------------------------------------
  *
- * Runs on every event on the sender thread before serialization. Mutate
- * `props` in place to redact, or return 0 to drop the event entirely.
- * Return nonzero to keep it. `event` is the event name. `user` is
- * ph_config.user_data. NULL hook = pass-through. Wired in v0.4.
+ * Runs before serialization. Native product events run on the sender thread;
+ * exception events run before enqueue so structured exception text can be
+ * redacted before $exception_list is built. Mutate `props` in place to redact,
+ * or return 0 to drop the event entirely. Return nonzero to keep it. `event`
+ * is the event name. `user` is ph_config.user_data. NULL hook = pass-through.
  */
 typedef int (*ph_before_send_fn)(const char *event, ph_props *props, void *user);
 
@@ -167,8 +168,7 @@ typedef struct ph_config {
     int max_batch;          /* events per POST (default 50) */
     int max_queue;          /* drop-oldest ring cap (default 1000) */
     int request_timeout_ms; /* per-POST timeout (default 10000) */
-    int max_retries;        /* per-batch retries w/ backoff (default 3) */
-    int gzip;               /* gzip batch bodies (default 1; v0.4) */
+    int max_retries;        /* per-batch retries before spill/drop (default 3) */
 
     const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only */
     const char *release;      /* e.g. "myapp@1.2.3" — tags every event */

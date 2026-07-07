@@ -71,7 +71,7 @@ void suite_offline(void) {
     mock_set_status(500);
     ph_capture("offline_ev", NULL);
     ph_flush(2000);
-    CHECK(mock_batch_count() == 1); /* one failed attempt */
+    CHECK(mock_batch_count() == 4); /* initial failed attempt + default 3 retries */
     content = read_file(path, &clen);
     CHECK_MSG(content != NULL && clen > 0, "expected a non-empty spill file");
     if (content) {

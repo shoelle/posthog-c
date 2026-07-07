@@ -33,6 +33,53 @@ static void copy_str(char *dst, size_t cap, const char *src) {
     dst[i] = '\0';
 }
 
+static void copy_prop_value(ph_props *dst, const ph_prop *src) {
+    switch (src->type) {
+        case PH_T_STR: ph_props_set_str(dst, src->key, src->val.str); break;
+        case PH_T_DOUBLE: ph_props_set_double(dst, src->key, src->val.dbl); break;
+        case PH_T_INT: ph_props_set_int(dst, src->key, src->val.i64); break;
+        case PH_T_BOOL: ph_props_set_bool(dst, src->key, src->val.boolean); break;
+        default: break;
+    }
+}
+
+static void remove_prop_key(ph_props *p, const char *key) {
+    int i, k;
+    if (!p || !key) return;
+    for (i = 0; i < p->count;) {
+        if (strcmp(p->items[i].key, key) == 0) {
+            for (k = i; k + 1 < p->count; k++) p->items[k] = p->items[k + 1];
+            p->count--;
+        } else {
+            i++;
+        }
+    }
+}
+
+static const char *find_last_str_prop(const ph_props *p, const char *key) {
+    int i;
+    if (!p || !key) return NULL;
+    for (i = p->count - 1; i >= 0; i--) {
+        const ph_prop *it = &p->items[i];
+        if (it->type == PH_T_STR && strcmp(it->key, key) == 0)
+            return it->val.str;
+    }
+    return NULL;
+}
+
+static int denylist_has(const char *key) {
+    int i;
+    if (!key) return 0;
+    for (i = 0; i < g_ph.denylist_count; i++)
+        if (strcmp(g_ph.denylist[i], key) == 0) return 1;
+    return 0;
+}
+
+static void apply_denylist(ph_props *p) {
+    int i;
+    for (i = 0; i < g_ph.denylist_count; i++) remove_prop_key(p, g_ph.denylist[i]);
+}
+
 static int def_int(int v, int fallback) { return v > 0 ? v : fallback; }
 
 static void gen_anon_id(char *out) {
@@ -63,7 +110,6 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->max_queue = 1000;
     cfg->request_timeout_ms = 10000;
     cfg->max_retries = 3;
-    cfg->gzip = 1;
     cfg->enabled = 1;
     cfg->person_profiles = PH_IDENTIFIED_ONLY;
     cfg->send_feature_flag_events = 1;
@@ -91,7 +137,6 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.max_queue = def_int(cfg->max_queue, 1000);
     g_ph.request_timeout_ms = def_int(cfg->request_timeout_ms, 10000);
     g_ph.max_retries = cfg->max_retries >= 0 ? cfg->max_retries : 3;
-    g_ph.gzip = cfg->gzip;
     g_ph.send_feature_flag_events = cfg->send_feature_flag_events;
     g_ph.before_send = cfg->before_send;
     g_ph.on_log = cfg->on_log;
@@ -241,10 +286,15 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
         memcpy(e->data + name_len, did, did_len);
         off = name_len + did_len;
 
-        /* Super props first so explicit event props win on duplicate keys
-         * (PostHog ingestion takes last-wins). Then user props. Then group
-         * scoping as $groups entries. */
+        /* Raw structured extras (currently $exception_list) are prioritized so
+         * diagnostic payloads survive even when user/super props crowd the fixed
+         * blob. Super props come before explicit event props so callers win on
+         * duplicate scalar keys (PostHog ingestion takes last-wins). */
         bl = 0;
+        if (extra && extra_len && extra_len <= cap - off) {
+            memcpy(e->data + off + bl, extra, extra_len);
+            bl += extra_len;
+        }
         if (stamp_super_groups)
             bl += ph_pack_props(&g_ph.super, e->data + off + bl, cap - off - bl);
         if (props)
@@ -255,10 +305,6 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
                 bl += ph_pack_str_entry(e->data + off + bl, cap - off - bl,
                                         (unsigned char)PH_PK_GROUP,
                                         g_ph.group_types[gi], g_ph.group_keys[gi]);
-        }
-        if (extra && extra_len && bl + extra_len <= cap - off) {
-            memcpy(e->data + off + bl, extra, extra_len);
-            bl += extra_len;
         }
         e->blob_len = (uint16_t)bl;
         ph_queue_end_push(&g_ph.queue);
@@ -340,14 +386,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_props_set_str(&p, "$group_key", key);
     if (set_props) {
         for (i = 0; i < set_props->count; i++) {
-            const ph_prop *it = &set_props->items[i];
-            switch (it->type) {
-                case PH_T_STR: ph_props_set_str(&p, it->key, it->val.str); break;
-                case PH_T_DOUBLE: ph_props_set_double(&p, it->key, it->val.dbl); break;
-                case PH_T_INT: ph_props_set_int(&p, it->key, it->val.i64); break;
-                case PH_T_BOOL: ph_props_set_bool(&p, it->key, it->val.boolean); break;
-                default: break;
-            }
+            copy_prop_value(&p, &set_props->items[i]);
         }
     }
     snprintf(did, sizeof(did), "$%s_%s", type, key);
@@ -389,33 +428,95 @@ void ph_unregister(const char *key) {
     ph_mutex_unlock(&g_ph.lock);
 }
 
+static void json_cstr_exception_cap(ph_strbuf *out, const char *s) {
+    size_t n = 0;
+    if (!s) s = "";
+    while (s[n] && n + 1 < PH_EXCEPTION_FIELD_CAP) n++;
+    ph_json_str(out, s, n);
+}
+
 /* Build the $exception_list JSON array (§8): one exception object with type,
- * value, mechanism, and a raw stacktrace of frames. Built here (off the sim hot
+ * value, mechanism, and a bounded raw stacktrace. Built here (off the sim hot
  * path — exceptions are rare) so the caller's transient frame pointers are
  * copied out before they go invalid. */
-static void build_exception_list(ph_strbuf *out, const ph_exception *ex) {
+static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
+                                 const char *type, const char *message,
+                                 int omit_function, int omit_filename,
+                                 int omit_module, int omit_frames) {
     int i;
+    int frame_count = ex->frame_count;
+    if (frame_count < 0) frame_count = 0;
+    if (frame_count > PH_MAX_EXCEPTION_FRAMES) frame_count = PH_MAX_EXCEPTION_FRAMES;
+
     ph_strbuf_append_cstr(out, "[{\"type\":");
-    ph_json_cstr(out, ex->type ? ex->type : "Error");
+    json_cstr_exception_cap(out, type ? type : "Error");
     ph_strbuf_append_cstr(out, ",\"value\":");
-    ph_json_cstr(out, ex->message ? ex->message : "");
+    json_cstr_exception_cap(out, message ? message : "");
     ph_strbuf_append_cstr(out, ",\"mechanism\":{\"handled\":");
     ph_json_bool(out, ex->handled);
     ph_strbuf_append_cstr(out, ",\"synthetic\":");
     ph_json_bool(out, ex->synthetic);
     ph_strbuf_append_cstr(out, "},\"stacktrace\":{\"type\":\"raw\",\"frames\":[");
-    for (i = 0; ex->frames && i < ex->frame_count; i++) {
+    for (i = 0; !omit_frames && ex->frames && i < frame_count; i++) {
         const ph_stackframe *f = &ex->frames[i];
         if (i > 0) ph_strbuf_append_char(out, ',');
         ph_strbuf_append_cstr(out, "{\"platform\":\"custom\",\"lang\":\"cpp\",\"in_app\":");
         ph_json_bool(out, f->in_app);
-        if (f->function) { ph_strbuf_append_cstr(out, ",\"function\":"); ph_json_cstr(out, f->function); }
-        if (f->filename) { ph_strbuf_append_cstr(out, ",\"filename\":"); ph_json_cstr(out, f->filename); }
-        if (f->module) { ph_strbuf_append_cstr(out, ",\"module\":"); ph_json_cstr(out, f->module); }
+        if (!omit_function && f->function) {
+            ph_strbuf_append_cstr(out, ",\"function\":");
+            json_cstr_exception_cap(out, f->function);
+        }
+        if (!omit_filename && f->filename) {
+            ph_strbuf_append_cstr(out, ",\"filename\":");
+            json_cstr_exception_cap(out, f->filename);
+        }
+        if (!omit_module && f->module) {
+            ph_strbuf_append_cstr(out, ",\"module\":");
+            json_cstr_exception_cap(out, f->module);
+        }
         if (f->lineno > 0) { ph_strbuf_append_cstr(out, ",\"lineno\":"); ph_json_int(out, f->lineno); }
         ph_strbuf_append_cstr(out, ",\"resolved\":true}");
     }
     ph_strbuf_append_cstr(out, "]}}]");
+}
+
+static int prepare_exception_props(const ph_exception *ex, ph_props *p,
+                                   char *type, size_t type_cap,
+                                   char *message, size_t message_cap,
+                                   int *omit_function, int *omit_filename,
+                                   int *omit_module, int *omit_frames) {
+    const char *v;
+    int i;
+
+    ph_props_init(p);
+    ph_props_set_str(p, "$exception_level", ex->handled ? "warning" : "error");
+    ph_props_set_str(p, "$exception_type", ex->type ? ex->type : "Error");
+    ph_props_set_str(p, "$exception_message", ex->message ? ex->message : "");
+    if (ex->extra) {
+        for (i = 0; i < ex->extra->count; i++) copy_prop_value(p, &ex->extra->items[i]);
+    }
+
+    apply_denylist(p);
+    if (denylist_has("type")) remove_prop_key(p, "$exception_type");
+    if (denylist_has("message")) remove_prop_key(p, "$exception_message");
+
+    if (g_ph.before_send && !g_ph.before_send("$exception", p, g_ph.user_data))
+        return 0;
+
+    v = find_last_str_prop(p, "$exception_type");
+    copy_str(type, type_cap, v ? v : "Error");
+    v = find_last_str_prop(p, "$exception_message");
+    copy_str(message, message_cap, v ? v : "");
+
+    remove_prop_key(p, "$exception_type");
+    remove_prop_key(p, "$exception_message");
+
+    *omit_function = denylist_has("function") || denylist_has("$exception_frame_function");
+    *omit_filename = denylist_has("filename") || denylist_has("$exception_frame_filename");
+    *omit_module = denylist_has("module") || denylist_has("$exception_frame_module");
+    *omit_frames = denylist_has("frames") || denylist_has("stacktrace") ||
+                   denylist_has("$exception_frames");
+    return 1;
 }
 
 void ph_capture_exception(const ph_exception *ex) {
@@ -423,38 +524,31 @@ void ph_capture_exception(const ph_exception *ex) {
     ph_strbuf list;
     char extra[PH_EVENT_DATA_CAP];
     size_t extra_len = 0;
-    int i;
+    char type[PH_EXCEPTION_FIELD_CAP];
+    char message[PH_EXCEPTION_FIELD_CAP];
+    int omit_function, omit_filename, omit_module, omit_frames;
 
     if (!g_ph.enabled || !ex) return;
 
-    /* Scalar props: $exception_level plus any caller extras. before_send and the
-     * denylist scrub these. (The message/frames live in the $exception_list
-     * rawjson below and are not yet reachable by the scrubber — a documented
-     * follow-up; hosts should keep PII out of exception text meanwhile.) */
-    ph_props_init(&p);
-    ph_props_set_str(&p, "$exception_level", ex->handled ? "warning" : "error");
-    if (ex->extra) {
-        for (i = 0; i < ex->extra->count; i++) {
-            const ph_prop *it = &ex->extra->items[i];
-            switch (it->type) {
-                case PH_T_STR: ph_props_set_str(&p, it->key, it->val.str); break;
-                case PH_T_DOUBLE: ph_props_set_double(&p, it->key, it->val.dbl); break;
-                case PH_T_INT: ph_props_set_int(&p, it->key, it->val.i64); break;
-                case PH_T_BOOL: ph_props_set_bool(&p, it->key, it->val.boolean); break;
-                default: break;
-            }
-        }
-    }
+    /* The structured exception payload has to be copied before caller-owned
+     * pointers go stale. Run the privacy hook here for exceptions so type/message
+     * can be redacted before the raw $exception_list is built. */
+    if (!prepare_exception_props(ex, &p, type, sizeof(type), message, sizeof(message),
+                                 &omit_function, &omit_filename, &omit_module,
+                                 &omit_frames))
+        return;
 
     /* The nested $exception_list rides as a rawjson entry (the flat packer can't
      * express nested arrays/objects); the serializer emits it verbatim. */
     ph_strbuf_init(&list);
-    build_exception_list(&list, ex);
+    build_exception_list(&list, ex, type, message, omit_function, omit_filename,
+                         omit_module, omit_frames);
     if (list.data && !list.oom)
         extra_len = ph_pack_str_entry(extra, sizeof(extra), (unsigned char)PH_PK_RAWJSON,
                                       "$exception_list", list.data);
 
-    submit_event(PH_EV_EXCEPTION, 0, "$exception", NULL, &p, -1, 1, extra, extra_len);
+    submit_event(PH_EV_EXCEPTION, PH_EVF_SCRUBBED, "$exception", NULL, &p, -1, 1,
+                 extra, extra_len);
     ph_strbuf_free(&list);
 }
 

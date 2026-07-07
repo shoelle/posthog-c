@@ -2,7 +2,7 @@
  * ph_flags.c — remote feature-flag evaluation + cache (§9).
  *
  * A client SDK can't hold the personal key server SDKs use for local eval, so
- * flags are evaluated remotely: POST /flags/ with the distinct_id, cache the
+ * flags are evaluated remotely: POST /flags?v=2 with the distinct_id, cache the
  * result, and answer ph_is_feature_enabled / ph_get_feature_flag(_payload) off
  * the cache. Reading a flag emits a deduped $feature_flag_called so experiments
  * can measure exposure.
@@ -73,7 +73,7 @@ void ph__flags_ingest(const char *json, size_t len) {
 static void flags_url(char *out, size_t cap) {
     size_t n = strlen(g_ph.api_host);
     while (n > 0 && g_ph.api_host[n - 1] == '/') n--;
-    snprintf(out, cap, "%.*s/flags/", (int)n, g_ph.api_host);
+    snprintf(out, cap, "%.*s/flags?v=2", (int)n, g_ph.api_host);
 }
 
 void ph__flags_fetch(void) {

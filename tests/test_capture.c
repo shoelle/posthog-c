@@ -9,6 +9,22 @@
 
 #include <string.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+static void sleep_ms(int ms) { Sleep((DWORD)ms); }
+#else
+#include <time.h>
+static void sleep_ms(int ms) {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
+}
+#endif
+
 /* Init with auto-flush disabled so the test controls exactly when a batch is
  * sent, via ph_flush(). */
 static void init_test_sdk(void) {
@@ -43,6 +59,18 @@ void suite_capture(void) {
         CHECK_CONTAINS(mock_batch(0), "\"panel\":\"code\"");
         CHECK_CONTAINS(mock_batch(0), "\"api_key\":\"phc_capture\"");
         CHECK_CONTAINS(mock_batch(0), "\"$process_person_profile\":false");
+        ph_shutdown();
+    }
+
+    /* --- sub-threshold events wait for flush/interval instead of sending one-by-one --- */
+    {
+        init_test_sdk();
+        ph_capture("wait_for_batch", NULL);
+        sleep_ms(150);
+        CHECK(mock_batch_count() == 0);
+        ph_flush(2000);
+        CHECK(mock_batch_count() == 1);
+        CHECK_CONTAINS(mock_batch(0), "\"event\":\"wait_for_batch\"");
         ph_shutdown();
     }
 
@@ -96,7 +124,7 @@ void suite_capture(void) {
         mock_set_status(500);
         ph_capture("will_fail", NULL);
         ph_flush(2000);
-        CHECK(mock_batch_count() == 1);
+        CHECK(mock_batch_count() == 4); /* initial try + default 3 retries */
         ph_shutdown();
     }
 
