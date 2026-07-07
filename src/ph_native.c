@@ -192,7 +192,8 @@ static void offline_replay(void) {
             int keep_line = failed;
             if (!failed) {
                 int status = post_and_note(buf + line_start, linelen);
-                if (status < 200 || status >= 300) {
+                if (status < 200 || status >= 300 ||
+                    ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) {
                     failed = 1;
                     keep_line = 1;
                 }
@@ -327,6 +328,40 @@ static int sender_backoff_wait(int ms) {
     return 0;
 }
 
+static void spill_batch(ph_event *evs, int n) {
+    ph_strbuf body;
+
+    n = scrub_events(evs, n);
+    if (n == 0) return;
+
+    ph_strbuf_init(&body);
+    ph_serialize_batch(&g_ph, evs, n, &body);
+    if (body.oom) {
+        ph_strbuf_free(&body);
+        ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d held events", n);
+        return;
+    }
+
+    offline_spill(body.data ? body.data : "", body.len);
+    ph_strbuf_free(&body);
+}
+
+static void spill_queued(ph_event *scratch) {
+    int spilled = 0;
+    for (;;) {
+        int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
+        if (n == 0) break;
+        if (g_ph.offline_path[0]) {
+            spill_batch(scratch, n);
+        } else {
+            spilled += n;
+        }
+    }
+    if (spilled > 0)
+        ph_log(PH_LOG_WARN, "rate-limited shutdown dropped %d held events "
+               "(set offline_path to persist)", spilled);
+}
+
 static void send_batch(ph_event *evs, int n) {
     ph_strbuf body;
     int status = -1;
@@ -380,7 +415,7 @@ static void send_batch(ph_event *evs, int n) {
 /* Drain: replay any spilled batches first (preserving order across a
  * reconnect), then send everything currently in memory, in max_batch chunks.
  * `sending` covers the whole pass so ph_flush() waits for the replay too. */
-static void drain(ph_event *scratch) {
+static void drain(ph_event *scratch, int final) {
     ph_mutex_lock(&g_ph.flush_lock);
     g_ph.sending = 1;
     ph_mutex_unlock(&g_ph.flush_lock);
@@ -397,6 +432,11 @@ static void drain(ph_event *scratch) {
             /* A batch just tripped the limiter — stop, hold the rest queued. */
             if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break;
         }
+    } else if (final) {
+        /* Respect server backpressure on shutdown. If the host provided an
+         * offline queue, persist held in-memory events instead of freeing them
+         * with the queue; otherwise they are dropped with a diagnostic. */
+        spill_queued(scratch);
     }
 
     ph_mutex_lock(&g_ph.flush_lock);
@@ -425,7 +465,7 @@ static void sender_main(void *arg) {
         g_ph.flags_refetch = 0;
         ph_mutex_unlock(&g_ph.flush_lock);
         if (refetch) ph__flags_fetch(); /* re-evaluate flags after ph_identify */
-        drain(scratch);
+        drain(scratch, 0);
         ph_mutex_lock(&g_ph.flush_lock);
         stop = g_ph.stop;
         ph_mutex_unlock(&g_ph.flush_lock);
@@ -441,7 +481,7 @@ static void sender_main(void *arg) {
             }
         }
     }
-    drain(scratch); /* final drain after the stop signal */
+    drain(scratch, 1); /* final drain after the stop signal */
     free(scratch);
 }
 

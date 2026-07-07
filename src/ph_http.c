@@ -181,6 +181,30 @@ static void scan_retry_after(const char *buf, size_t n, char *out, size_t cap) {
     }
 }
 
+static long scan_content_length(const char *buf, size_t n) {
+    static const char key[] = "content-length:";
+    const size_t klen = sizeof(key) - 1;
+    size_t i;
+    for (i = 0; i + klen <= n; i++) {
+        size_t k = 0;
+        long len = 0;
+        if (i != 0 && buf[i - 1] != '\n') continue;
+        while (k < klen && (char)tolower((unsigned char)buf[i + k]) == key[k]) k++;
+        if (k == klen) {
+            size_t j = i + klen;
+            while (j < n && (buf[j] == ' ' || buf[j] == '\t')) j++;
+            if (j >= n || buf[j] < '0' || buf[j] > '9') return -1;
+            while (j < n && buf[j] >= '0' && buf[j] <= '9') {
+                if (len > 100000000L) return 100000000L;
+                len = len * 10 + (long)(buf[j] - '0');
+                j++;
+            }
+            return len;
+        }
+    }
+    return -1;
+}
+
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
  * terminator) is copied into it (NUL-terminated, capped) — used for /flags/;
  * otherwise only the status line is read (the capture path discards the body).
@@ -255,20 +279,30 @@ static int do_http(const char *url, const char *body, size_t body_len,
          * so a bounded read captures it all. */
         char resp[4096];
         size_t total = 0;
+        long content_len = -1;
+        const char *sep = NULL;
         for (;;) {
             int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
             if (n <= 0) break;
             total += (size_t)n;
+            resp[total] = '\0';
+            if (!sep) {
+                sep = strstr(resp, "\r\n\r\n");
+                if (sep) content_len = scan_content_length(resp, (size_t)(sep - resp));
+            }
+            if (sep) {
+                size_t body_have = total - (size_t)((sep + 4) - resp);
+                if (content_len >= 0 && body_have >= (size_t)content_len) break;
+                if (body_have >= PH_RESP_BODY_CAP - 1) break;
+                if (content_len < 0 && body_have > 0) break;
+            }
             if (total >= sizeof(resp) - 1) break;
         }
         if (total > 0) {
-            resp[total] = '\0';
             status = parse_status(resp, total);
             if (meta) {
-                const char *sep;
                 scan_retry_after(resp, total, meta->retry_after,
                                  sizeof meta->retry_after);
-                sep = strstr(resp, "\r\n\r\n");
                 if (sep) {
                     const char *b = sep + 4;
                     size_t blen = total - (size_t)(b - resp);

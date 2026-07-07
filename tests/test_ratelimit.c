@@ -5,12 +5,50 @@
  * end-to-end gate through the sender and mock transport.
  */
 #include "posthog.h"
+#include "ph_internal.h" /* PH_OFFLINE_FILENAME */
 #include "ph_ratelimit.h"
 #include "ph_thread.h" /* ph_sleep_ms */
 #include "mock_transport.h"
 #include "test_util.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #define SEC_NS(s) ((uint64_t)(s) * 1000000000ull)
+
+static void temp_dir(char *out, size_t cap, const char *name) {
+    const char *t = getenv("TEMP");
+    if (!t) t = getenv("TMPDIR");
+    if (!t) t = ".";
+    snprintf(out, cap, "%s/%s", t, name);
+}
+
+static char *read_file(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    long sz;
+    char *buf;
+    size_t rd;
+    if (out_len) *out_len = 0;
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) {
+        fclose(f);
+        return NULL;
+    }
+    buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    rd = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[rd] = '\0';
+    if (out_len) *out_len = rd;
+    return buf;
+}
 
 /* --- Retry-After parsing (pure) --------------------------------------- */
 static void test_parse(void) {
@@ -150,9 +188,99 @@ static void test_quota_gate(void) {
     ph_shutdown();
 }
 
+/* --- offline replay: quota-limited 2xx keeps the spill line ---------- */
+static void test_quota_keeps_offline_replay(void) {
+    char dir[256], path[300];
+    char *content;
+    size_t clen;
+    ph_config cfg;
+
+    temp_dir(dir, sizeof(dir), "ph_rl_quota_replay");
+    snprintf(path, sizeof(path), "%s/%s", dir, PH_OFFLINE_FILENAME);
+    remove(path);
+
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_qr";
+    cfg.api_host = "http://127.0.0.1:9";
+    cfg.distinct_id = "anon-qr";
+    cfg.flush_at = 100000;
+    cfg.flush_interval_ms = 60000;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    cfg.offline_path = dir;
+    CHECK(ph_init(&cfg) == PH_OK);
+    mock_reset();
+    mock_install();
+
+    mock_set_status(500);
+    ph_capture("offline_quota_ev", NULL);
+    ph_flush(2000);
+
+    mock_reset();
+    mock_set_status(200);
+    mock_set_send_body("{\"status\":1,\"quota_limited\":[\"events\"]}");
+    ph_flush(2000);
+    CHECK(mock_batch_count() == 1);
+
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0, "expected quota-limited replay to stay on disk");
+    if (content) {
+        CHECK_CONTAINS(content, "offline_quota_ev");
+        free(content);
+    }
+
+    ph_shutdown();
+    remove(path);
+}
+
+/* --- shutdown during a hold persists queued events when offline_path exists --- */
+static void test_shutdown_spills_held_queue(void) {
+    char dir[256], path[300];
+    char *content;
+    size_t clen;
+    ph_config cfg;
+
+    temp_dir(dir, sizeof(dir), "ph_rl_shutdown_hold");
+    snprintf(path, sizeof(path), "%s/%s", dir, PH_OFFLINE_FILENAME);
+    remove(path);
+
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_sd";
+    cfg.api_host = "http://127.0.0.1:9";
+    cfg.distinct_id = "anon-sd";
+    cfg.flush_at = 100000;
+    cfg.flush_interval_ms = 60000;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    cfg.offline_path = dir;
+    CHECK(ph_init(&cfg) == PH_OK);
+    mock_reset();
+    mock_install();
+
+    mock_set_status(429);
+    mock_set_retry_after("2");
+    ph_capture("trips_hold", NULL);
+    ph_flush(2000);
+
+    mock_reset();
+    mock_set_status(200);
+    ph_capture("held_at_shutdown", NULL);
+    ph_shutdown();
+
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0, "expected held queue to spill on shutdown");
+    if (content) {
+        CHECK_CONTAINS(content, "held_at_shutdown");
+        free(content);
+    }
+    remove(path);
+}
+
 void suite_ratelimit(void) {
     test_parse();
     test_state();
     test_sender_gate();
     test_quota_gate();
+    test_quota_keeps_offline_replay();
+    test_shutdown_spills_held_queue();
 }
