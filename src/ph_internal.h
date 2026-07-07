@@ -118,6 +118,7 @@ typedef struct ph_ctx {
     int max_queue;
     int request_timeout_ms;
     int max_retries;
+    int gzip;
     int send_feature_flag_events;
     ph_before_send_fn before_send;
     ph_log_fn on_log;

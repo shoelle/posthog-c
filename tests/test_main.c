@@ -13,6 +13,7 @@ void suite_exception(void);
 void suite_offline(void);
 void suite_jsonparse(void);
 void suite_flags(void);
+void suite_gzip(void);
 void suite_http(void);
 
 int main(void) {
@@ -28,6 +29,7 @@ int main(void) {
     printf("[offline]\n");   suite_offline();
     printf("[jsonparse]\n"); suite_jsonparse();
     printf("[flags]\n");     suite_flags();
+    printf("[gzip]\n");      suite_gzip();
     printf("[http]\n");      suite_http();
 
     printf("\n%d checks, %d failure%s\n", g_checks, g_failures,

@@ -112,6 +112,7 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->max_queue = 1000;
     cfg->request_timeout_ms = 10000;
     cfg->max_retries = 3;
+    cfg->gzip = 1; /* honored on native; the wasm backend leaves delivery to posthog-js */
     cfg->enabled = 1;
     cfg->person_profiles = PH_IDENTIFIED_ONLY;
     cfg->send_feature_flag_events = 1;

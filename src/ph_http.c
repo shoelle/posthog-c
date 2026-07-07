@@ -1,4 +1,5 @@
 #include "ph_http.h"
+#include "ph_gzip.h"
 #include "ph_tls.h"
 
 #include <stdio.h>
@@ -81,11 +82,12 @@ static ph_result parse_url(const char *url, ph_url *out) {
 }
 
 ph_result ph_http_build_request(const char *url, const char *body,
-                                size_t body_len, ph_strbuf *out) {
+                                size_t body_len, const char *content_encoding,
+                                ph_strbuf *out) {
     ph_url u;
     char line[PH_HOST_CAP + 64];
     if (parse_url(url, &u) != PH_OK) return PH_ERR;
-    if (u.is_https) return PH_ERR; /* TLS is v0.2 */
+    if (u.is_https) return PH_ERR; /* https is handled by the TLS backend */
 
     snprintf(line, sizeof(line), "POST %s HTTP/1.1\r\n", u.path);
     ph_strbuf_append_cstr(out, line);
@@ -97,6 +99,10 @@ ph_result ph_http_build_request(const char *url, const char *body,
         snprintf(line, sizeof(line), "Host: %s:%s\r\n", u.host, u.port);
     ph_strbuf_append_cstr(out, line);
     ph_strbuf_append_cstr(out, "Content-Type: application/json\r\n");
+    if (content_encoding && content_encoding[0]) {
+        snprintf(line, sizeof(line), "Content-Encoding: %s\r\n", content_encoding);
+        ph_strbuf_append_cstr(out, line);
+    }
     snprintf(line, sizeof(line), "Content-Length: %lu\r\n", (unsigned long)body_len);
     ph_strbuf_append_cstr(out, line);
     ph_strbuf_append_cstr(out, "Connection: close\r\n\r\n");
@@ -155,7 +161,8 @@ static int parse_status(const char *resp, size_t n) {
  * otherwise only the status line is read (the capture path discards the body).
  * Returns the HTTP status, or <0 on failure. */
 static int do_http(const char *url, const char *body, size_t body_len,
-                   int timeout_ms, char *out, size_t out_cap) {
+                   int timeout_ms, char *out, size_t out_cap,
+                   const char *content_encoding) {
     ph_url u;
     ph_strbuf req;
     struct addrinfo hints, *res = NULL, *ai;
@@ -170,12 +177,14 @@ static int do_http(const char *url, const char *body, size_t body_len,
     if (u.is_https)
         return out ? ph_tls_fetch(u.host, atoi(u.port), u.path, body, body_len,
                                   timeout_ms, out, out_cap)
-                   : ph_tls_send(u.host, atoi(u.port), u.path, body, body_len, timeout_ms);
+                   : ph_tls_send(u.host, atoi(u.port), u.path, body, body_len,
+                                 timeout_ms, content_encoding);
 
     winsock_once();
 
     ph_strbuf_init(&req);
-    if (ph_http_build_request(url, body, body_len, &req) != PH_OK || req.oom) {
+    if (ph_http_build_request(url, body, body_len, content_encoding, &req) != PH_OK ||
+        req.oom) {
         ph_strbuf_free(&req);
         return -1;
     }
@@ -250,14 +259,26 @@ static int do_http(const char *url, const char *body, size_t body_len,
 
 static int http_send(void *self, const char *url, const char *body,
                      size_t body_len, int timeout_ms) {
+    char *gz = NULL;
+    size_t gzlen = 0;
+    const char *enc = NULL;
+    int rc;
     (void)self;
-    return do_http(url, body, body_len, timeout_ms, NULL, 0);
+    /* gzip the batch body when enabled; fall back to plaintext on failure. */
+    if (g_ph.gzip && body_len > 0 && ph_gzip(body, body_len, &gz, &gzlen) == 0) {
+        body = gz;
+        body_len = gzlen;
+        enc = "gzip";
+    }
+    rc = do_http(url, body, body_len, timeout_ms, NULL, 0, enc);
+    free(gz);
+    return rc;
 }
 
 static int http_fetch(void *self, const char *url, const char *body,
                       size_t body_len, int timeout_ms, char *out, size_t out_cap) {
     (void)self;
-    return do_http(url, body, body_len, timeout_ms, out, out_cap);
+    return do_http(url, body, body_len, timeout_ms, out, out_cap, NULL);
 }
 
 ph_transport ph_http_transport_create(void) {

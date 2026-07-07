@@ -9,7 +9,8 @@ fills that gap on top of PostHog's raw ingestion API.
 > C ABI, non-blocking capture, a background sender, and `/batch/` delivery over
 > plaintext HTTP (for a local dev proxy) are working and tested — as are
 > anonymous-by-default identity, a `before_send` scrubber, a property denylist,
-> a capture rate limiter, and an offline disk queue (spill/replay). HTTPS works
+> a capture rate limiter, an offline disk queue (spill/replay), and gzip'd
+> batches (`Content-Encoding: gzip`). HTTPS works
 > on Windows (validated via WinHTTP against real `us.i.posthog.com`), and the
 > **WebAssembly backend** (a shim over the browser's `window.posthog`) is
 > verified for native/wasm parity under Node. Native errors ship as full PostHog
@@ -112,6 +113,7 @@ posthog-c/
 ├── src/           # implementation: native backend + ph_wasm.c (window.posthog shim)
 ├── tests/         # native suite (zig build test) + tests/wasm Node parity harness
 ├── examples/      # quickstart.c / quickstart.cpp
+├── third_party/   # vendored sdefl (single-file gzip compressor; MIT / public domain)
 ├── build.zig      # single build entry point (also a consumable module)
 ├── DESIGN.md      # architecture, event/wire model, roadmap, tradeoffs
 ├── CLAUDE.md      # working notes: conventions + module map

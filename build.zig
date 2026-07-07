@@ -21,6 +21,10 @@ const c_sources = [_][]const u8{
 
 const c_flags = [_][]const u8{ "-std=c11", "-D_GNU_SOURCE", "-Wall", "-Wextra" };
 
+// third_party/sdefl is C90; compile ph_gzip.c (which pulls in its
+// implementation) without -Wall/-Wextra so third-party warnings stay out.
+const gzip_flags = [_][]const u8{ "-std=c11", "-D_GNU_SOURCE" };
+
 const test_sources = [_][]const u8{
     "tests/test_main.c",
     "tests/mock_transport.c",
@@ -34,6 +38,7 @@ const test_sources = [_][]const u8{
     "tests/test_offline.c",
     "tests/test_jsonparse.c",
     "tests/test_flags.c",
+    "tests/test_gzip.c",
     "tests/test_http.c",
 };
 
@@ -130,7 +135,9 @@ pub fn create(
     });
     lib.addIncludePath(b.path("include"));
     lib.addIncludePath(b.path("src"));
+    lib.addIncludePath(b.path("third_party/sdefl"));
     lib.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
+    lib.addCSourceFiles(.{ .files = &.{"src/ph_gzip.c"}, .flags = &gzip_flags });
     linkPlatform(lib, target);
     return lib;
 }

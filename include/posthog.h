@@ -170,6 +170,8 @@ typedef struct ph_config {
     int request_timeout_ms; /* per-POST timeout (default 10000) */
     int max_retries;        /* per-batch retries (exp backoff; 5xx/timeout only)
                              * before spill/drop (default 3) */
+    int gzip;               /* gzip /batch/ bodies with Content-Encoding: gzip
+                             * (default 1 = on; native only, wasm ignores it) */
 
     const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only */
     const char *release;      /* e.g. "myapp@1.2.3" — tags every event */

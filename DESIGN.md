@@ -47,7 +47,7 @@ ph_capture (caller thread)              background sender thread
 ------------------------                ------------------------
 pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
 (no malloc / clock / RNG)                flush_at or flush_interval_ms
-                                         serialize -> POST {host}/batch/
+                                         serialize -> gzip -> POST {host}/batch/
                                          2xx: drop batch
                                          else: spill to disk, replay on reconnect
 ```
@@ -179,3 +179,10 @@ customer's own integration reference:
    has its overflowing properties dropped (and counted), never a heap allocation.
 6. **Session replay:** out of scope — no DOM/canvas to record from C, and a
    privacy liability. Explicitly excluded.
+7. **Compression dependency.** `/batch/` bodies are gzip'd (`Content-Encoding:
+   gzip`, on by default like posthog-js; opt out with `cfg.gzip = 0`). The one
+   vendored dependency is `third_party/sdefl` — a single-file, ~525-LoC,
+   compress-only DEFLATE lib (MIT / public domain), wrapped in `ph_gzip.c` to
+   emit the gzip container. Native only: the wasm backend leaves compression to
+   posthog-js. Chosen over miniz for being far smaller and compress-only, which
+   is all we need.

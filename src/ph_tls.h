@@ -12,10 +12,12 @@
 
 #include <stddef.h>
 
-/* POST `body` to https://host:port/path. Returns the HTTP status code, or a
- * value < 0 on a connect/TLS/transport failure. Blocks up to timeout_ms. */
+/* POST `body` to https://host:port/path. `content_encoding` adds a
+ * Content-Encoding header when non-NULL (e.g. "gzip"). Returns the HTTP status
+ * code, or a value < 0 on a connect/TLS/transport failure. Blocks up to
+ * timeout_ms. */
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
-                size_t body_len, int timeout_ms);
+                size_t body_len, int timeout_ms, const char *content_encoding);
 
 /* Like ph_tls_send, but also copy the response body into out (NUL-terminated,
  * capped at out_cap) — used for /flags/. */

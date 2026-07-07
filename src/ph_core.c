@@ -110,6 +110,7 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->max_queue = 1000;
     cfg->request_timeout_ms = 10000;
     cfg->max_retries = 3;
+    cfg->gzip = 1;
     cfg->enabled = 1;
     cfg->person_profiles = PH_IDENTIFIED_ONLY;
     cfg->send_feature_flag_events = 1;
@@ -137,6 +138,7 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.max_queue = def_int(cfg->max_queue, 1000);
     g_ph.request_timeout_ms = def_int(cfg->request_timeout_ms, 10000);
     g_ph.max_retries = cfg->max_retries >= 0 ? cfg->max_retries : 3;
+    g_ph.gzip = cfg->gzip;
     g_ph.send_feature_flag_events = cfg->send_feature_flag_events;
     g_ph.before_send = cfg->before_send;
     g_ph.on_log = cfg->on_log;
