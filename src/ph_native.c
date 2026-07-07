@@ -44,9 +44,19 @@ static int post_body(const char *body, size_t len, ph_send_meta *meta) {
     return t.send(t.self, url, body, len, g_ph.request_timeout_ms, meta);
 }
 
-/* POST a batch and fold any server backpressure (429, or 503 with Retry-After)
- * into the rate limiter, so the next drain holds off instead of hammering a
- * throttled endpoint. Returns the HTTP-ish status. */
+/* PostHog signals event quota as a 2xx body: {"status":1,"quota_limited":[...]}.
+ * Returns 1 when that list names our resource ("events"), so the sender holds
+ * like a 429. Deliberately narrow: an absent field or an unrelated resource
+ * (e.g. "recordings") leaves us sending. */
+static int quota_limited_events(const char *body) {
+    return body && body[0] && strstr(body, "quota_limited") != NULL &&
+           strstr(body, "\"events\"") != NULL;
+}
+
+/* POST a batch and fold any server backpressure into the rate limiter, so the
+ * next drain holds off instead of hammering a throttled endpoint: an HTTP 429
+ * (or 503 with Retry-After), or a 2xx carrying PostHog's quota-limit notice.
+ * Returns the HTTP-ish status. */
 static int post_and_note(const char *body, size_t len) {
     ph_send_meta meta;
     int status;
@@ -55,6 +65,8 @@ static int post_and_note(const char *body, size_t len) {
     if (status == 429 || status == 503)
         ph_ratelimit_note_response(&g_ph.rl, status, meta.retry_after,
                                    ph_now_mono_ns(), ph_now_wall_ns());
+    else if (status >= 200 && status < 300 && quota_limited_events(meta.body))
+        ph_ratelimit_arm(&g_ph.rl, PH_RL_DEFAULT_BACKOFF_MS, ph_now_mono_ns());
     return status;
 }
 

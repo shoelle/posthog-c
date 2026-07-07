@@ -9,6 +9,7 @@ void mock_install(void);        /* replace the SDK transport with this one */
 void mock_reset(void);          /* clear captured batches + flags response; status -> 200 */
 void mock_set_status(int status); /* what send()/fetch() returns (e.g. 500 to fail) */
 void mock_set_retry_after(const char *value); /* Retry-After value send() surfaces ("" = none) */
+void mock_set_send_body(const char *body);    /* 2xx response body send() surfaces (e.g. quota notice) */
 void mock_set_flags_response(const char *json); /* body fetch() returns for /flags/ */
 int mock_batch_count(void);
 const char *mock_batch(int i);  /* body of the i-th captured batch, or NULL */

@@ -205,7 +205,9 @@ static int do_http(const char *url, const char *body, size_t body_len,
                    : ph_tls_send(u.host, atoi(u.port), u.path, body, body_len,
                                  timeout_ms, content_encoding,
                                  meta ? meta->retry_after : NULL,
-                                 meta ? sizeof meta->retry_after : 0);
+                                 meta ? sizeof meta->retry_after : 0,
+                                 meta ? meta->body : NULL,
+                                 meta ? sizeof meta->body : 0);
 
     winsock_once();
 
@@ -247,16 +249,36 @@ static int do_http(const char *url, const char *body, size_t body_len,
     }
 
     if (!out) {
-        /* Read enough of the head to catch the status line and any Retry-After.
-         * A single segment carries both for the small 429/503 responses that
-         * matter here; the status line is always first. */
-        char head[1024];
-        int n = (int)recv(s, head, (int)sizeof(head) - 1, 0);
-        if (n > 0) {
-            head[n] = '\0';
-            status = parse_status(head, (size_t)n);
-            if (meta) scan_retry_after(head, (size_t)n, meta->retry_after,
-                                       sizeof meta->retry_after);
+        /* Read the (small) response: status line, headers including any
+         * Retry-After, and the body prefix carrying a quota-limit notice. A
+         * telemetry 2xx body is tiny and the server closes (Connection: close),
+         * so a bounded read captures it all. */
+        char resp[4096];
+        size_t total = 0;
+        for (;;) {
+            int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
+            if (n <= 0) break;
+            total += (size_t)n;
+            if (total >= sizeof(resp) - 1) break;
+        }
+        if (total > 0) {
+            resp[total] = '\0';
+            status = parse_status(resp, total);
+            if (meta) {
+                const char *sep;
+                scan_retry_after(resp, total, meta->retry_after,
+                                 sizeof meta->retry_after);
+                sep = strstr(resp, "\r\n\r\n");
+                if (sep) {
+                    const char *b = sep + 4;
+                    size_t blen = total - (size_t)(b - resp);
+                    size_t copy = blen < sizeof(meta->body) - 1
+                                      ? blen
+                                      : sizeof(meta->body) - 1;
+                    memcpy(meta->body, b, copy);
+                    meta->body[copy] = '\0';
+                }
+            }
         }
     } else {
         /* Read the whole response, parse the status, copy the body past the

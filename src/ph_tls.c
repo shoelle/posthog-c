@@ -104,9 +104,12 @@ done:
 
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
                 size_t body_len, int timeout_ms, const char *content_encoding,
-                char *retry_after, size_t retry_after_cap) {
-    return do_tls(host, port, path, body, body_len, timeout_ms, NULL, 0,
-                  content_encoding, retry_after, retry_after_cap);
+                char *retry_after, size_t retry_after_cap, char *body_out,
+                size_t body_out_cap) {
+    /* Route the body prefix through do_tls's response-body reader (the same one
+     * /flags/ uses), just into a small caller buffer. */
+    return do_tls(host, port, path, body, body_len, timeout_ms, body_out,
+                  body_out_cap, content_encoding, retry_after, retry_after_cap);
 }
 
 int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
@@ -121,7 +124,8 @@ int ph_tls_available(void) { return 0; }
 
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
                 size_t body_len, int timeout_ms, const char *content_encoding,
-                char *retry_after, size_t retry_after_cap) {
+                char *retry_after, size_t retry_after_cap, char *body_out,
+                size_t body_out_cap) {
     (void)host;
     (void)port;
     (void)path;
@@ -130,6 +134,7 @@ int ph_tls_send(const char *host, int port, const char *path, const char *body,
     (void)timeout_ms;
     (void)content_encoding;
     if (retry_after && retry_after_cap) retry_after[0] = '\0';
+    if (body_out && body_out_cap) body_out[0] = '\0';
     return -1;
 }
 

@@ -39,6 +39,15 @@ typedef struct ph_ratelimit {
 void ph_ratelimit_init(ph_ratelimit *rl);
 
 /*
+ * Engage the hold for `window_ms` from now: a small positive jitter is added
+ * (so a fleet throttled together does not resume in lockstep) and the total is
+ * clamped to PH_RL_MAX_BACKOFF_MS. Exposed so a caller that detects backpressure
+ * by a non-HTTP-status signal — e.g. a body-level quota notice — can engage the
+ * same hold as the 429/Retry-After path.
+ */
+void ph_ratelimit_arm(ph_ratelimit *rl, uint64_t window_ms, uint64_t now_mono_ns);
+
+/*
  * Parse an RFC 9110 Retry-After header *value*. Two forms are accepted:
  *   delay-seconds  a non-negative integer count of seconds ("120")
  *   HTTP-date      an IMF-fixdate ("Fri, 31 Dec 1999 23:59:59 GMT")

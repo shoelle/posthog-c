@@ -74,14 +74,23 @@
 
 /* --- Transport seam --------------------------------------------------- */
 
+/* Bounded prefix of a 2xx response body a transport captures for the sender to
+ * inspect (PostHog signals event quota as 200 + {"quota_limited":[...]}). The
+ * bodies that matter are tiny; a small cap keeps the read cheap. */
+#ifndef PH_RESP_BODY_CAP
+#define PH_RESP_BODY_CAP 256
+#endif
+
 /*
  * Out-of-band response metadata a transport may surface alongside the status.
  * The caller zero-initializes it; a transport fills what it can and leaves the
  * rest empty. Kept separate from the status so the common path stays a plain
- * int return. Currently just the raw Retry-After header (server backpressure).
+ * int return: the raw Retry-After header, and a prefix of the 2xx body (for the
+ * server's quota-limit notice). Both feed the sender's rate limiter.
  */
 typedef struct ph_send_meta {
-    char retry_after[64]; /* raw Retry-After header value; "" if absent */
+    char retry_after[64];        /* raw Retry-After header value; "" if absent */
+    char body[PH_RESP_BODY_CAP]; /* 2xx response-body prefix; "" if unread */
 } ph_send_meta;
 
 /*

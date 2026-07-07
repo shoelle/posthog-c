@@ -6,6 +6,17 @@
 
 void ph_ratelimit_init(ph_ratelimit *rl) { rl->disabled_until_mono_ns = 0; }
 
+void ph_ratelimit_arm(ph_ratelimit *rl, uint64_t window_ms, uint64_t now_mono_ns) {
+    /* Positive jitter of up to ~1/8 of the window, derived from the low bits of
+     * the monotonic clock (distinct across processes) so a fleet throttled at
+     * once does not resume in a single thundering herd. No RNG needed. */
+    uint64_t jitter = now_mono_ns % (window_ms / 8 + 1);
+    window_ms += jitter;
+    if (window_ms > (uint64_t)PH_RL_MAX_BACKOFF_MS)
+        window_ms = (uint64_t)PH_RL_MAX_BACKOFF_MS;
+    rl->disabled_until_mono_ns = now_mono_ns + window_ms * 1000000ull;
+}
+
 /* Days from the civil date to 1970-01-01 (Howard Hinnant's algorithm). Valid
  * for the proleptic Gregorian calendar; y is the full year, m in [1,12]. */
 static long days_from_civil(long y, unsigned m, unsigned d) {
@@ -90,7 +101,7 @@ int ph_ratelimit_note_response(ph_ratelimit *rl, int status,
                                const char *retry_after, uint64_t now_mono_ns,
                                uint64_t now_wall_ns) {
     long ra_ms;
-    uint64_t window_ms, jitter;
+    uint64_t window_ms;
 
     if (status != 429 && status != 503)
         return ph_ratelimit_blocked(rl, now_mono_ns);
@@ -105,15 +116,7 @@ int ph_ratelimit_note_response(ph_ratelimit *rl, int status,
         window_ms = PH_RL_DEFAULT_BACKOFF_MS;
     }
 
-    /* Positive jitter of up to ~1/8 of the window, derived from the low bits of
-     * the monotonic clock (distinct across processes) so a fleet throttled at
-     * once does not resume in a single thundering herd. No RNG needed. */
-    jitter = now_mono_ns % (window_ms / 8 + 1);
-    window_ms += jitter;
-    if (window_ms > (uint64_t)PH_RL_MAX_BACKOFF_MS)
-        window_ms = (uint64_t)PH_RL_MAX_BACKOFF_MS;
-
-    rl->disabled_until_mono_ns = now_mono_ns + window_ms * 1000000ull;
+    ph_ratelimit_arm(rl, window_ms, now_mono_ns);
     return 1;
 }
 

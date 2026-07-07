@@ -109,8 +109,50 @@ static void test_sender_gate(void) {
     ph_shutdown();
 }
 
+/* --- PostHog quota notice: a 2xx body pauses the sender like a 429 ---- */
+static void test_quota_gate(void) {
+    ph_config cfg;
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_q";
+    cfg.api_host = "http://127.0.0.1:9";
+    cfg.distinct_id = "anon-q";
+    cfg.flush_at = 100000;
+    cfg.flush_interval_ms = 60000;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    CHECK(ph_init(&cfg) == PH_OK);
+    mock_reset();
+    mock_install();
+
+    /* A plain 200 with no quota notice does not pause: both batches go out. */
+    mock_set_status(200);
+    mock_set_send_body("{\"status\":1}");
+    ph_capture("evt_1", NULL);
+    ph_flush(2000);
+    CHECK(mock_batch_count() == 1);
+    ph_capture("evt_2", NULL);
+    ph_flush(2000);
+    CHECK(mock_batch_count() == 2); /* not held */
+
+    /* Now the server reports events quota-limited on a 200. That batch is still
+     * accepted (200), but the sender arms the hold for what follows. */
+    mock_set_send_body("{\"status\":1,\"quota_limited\":[\"events\"]}");
+    ph_capture("evt_3", NULL);
+    ph_flush(2000);
+    CHECK(mock_batch_count() == 3);
+
+    /* Even with the server healthy again, the next event is held by the window. */
+    mock_set_send_body("{\"status\":1}");
+    ph_capture("evt_4", NULL);
+    ph_flush(300);
+    CHECK(mock_batch_count() == 3); /* held */
+
+    ph_shutdown();
+}
+
 void suite_ratelimit(void) {
     test_parse();
     test_state();
     test_sender_gate();
+    test_quota_gate();
 }

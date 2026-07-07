@@ -143,13 +143,17 @@ customer's own integration reference:
   HTTP-date — arms a monotonic hold, and skips draining until the window clears,
   so a throttled endpoint isn't hammered batch-after-batch. Held events wait in
   the ring (drop-oldest on overflow); a small clock-derived jitter de-syncs a
-  fleet throttled at once. The logic is pure and unit-tested
-  ([`src/ph_ratelimit.c`](src/ph_ratelimit.c)); transports surface the raw header
-  through the [`ph_transport`](src/ph_internal.h) seam. Note PostHog ingestion
-  signals event *quota* as `200` + a `{"quota_limited": […]}` body (no
-  `Retry-After`), so this mainly earns its keep behind an `/ingest` proxy
-  (Cloudflare/nginx/gateway) that emits standard `429`s; the `200`-body path is a
-  separate, planned companion.
+  fleet throttled at once. The hold itself is pure and unit-tested
+  ([`src/ph_ratelimit.c`](src/ph_ratelimit.c)); transports surface the header and
+  a body prefix through the [`ph_transport`](src/ph_internal.h) seam. **Two
+  signals feed the same hold:** standard HTTP `429`/`503` (what an `/ingest`
+  proxy — Cloudflare, nginx, a gateway — emits), and PostHog's own event-quota
+  notice, which its capture endpoint returns as `200` + a
+  `{"quota_limited": ["events", …]}` body — no `429`, no header. On the quota
+  body the sender arms the default window; the batch itself was accepted (`200`)
+  so it is not resent. The `200`-body detection is PostHog-specific and lives in
+  the sender ([`src/ph_native.c`](src/ph_native.c)), keeping `ph_ratelimit` a
+  generic RFC-9110 module.
 - **Anonymous by default**, `respect_dnt` (planned), and a master `enabled`
   kill-switch (`enabled = 0` makes every call a no-op with no thread).
 - Designed for privacy-sensitive apps, including those serving minors: the SDK
@@ -161,7 +165,7 @@ customer's own integration reference:
 | Stage | Adds |
 |---|---|
 | **v0.1** (done) | C ABI, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
-| **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After`), offline disk queue (spill/replay), `ph_dropped_events()` |
+| **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After` + `quota_limited` body), offline disk queue (spill/replay), `ph_dropped_events()` |
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP → real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |
