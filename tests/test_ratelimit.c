@@ -188,8 +188,9 @@ static void test_quota_gate(void) {
     ph_shutdown();
 }
 
-/* --- offline replay: quota-limited 2xx keeps the spill line ---------- */
-static void test_quota_keeps_offline_replay(void) {
+/* --- offline replay: a quota-limited 2xx is accepted (dropped from the spill),
+ *     while the untried remainder is held for a later drain -------------- */
+static void test_quota_replay_drops_delivered_keeps_rest(void) {
     char dir[256], path[300];
     char *content;
     size_t clen;
@@ -212,20 +213,27 @@ static void test_quota_keeps_offline_replay(void) {
     mock_reset();
     mock_install();
 
+    /* Spill two separate batches by failing their sends. */
     mock_set_status(500);
-    ph_capture("offline_quota_ev", NULL);
+    ph_capture("replay_first", NULL);
+    ph_flush(2000);
+    ph_capture("replay_second", NULL);
     ph_flush(2000);
 
+    /* Replay against a server that quota-limits: the first line is accepted
+     * (200) and arms the hold, so it is dropped and replay stops; the second,
+     * untried, stays on disk for a later drain. */
     mock_reset();
     mock_set_status(200);
     mock_set_send_body("{\"status\":1,\"quota_limited\":[\"events\"]}");
     ph_flush(2000);
-    CHECK(mock_batch_count() == 1);
+    CHECK(mock_batch_count() == 1); /* only the first line was attempted */
 
     content = read_file(path, &clen);
-    CHECK_MSG(content != NULL && clen > 0, "expected quota-limited replay to stay on disk");
+    CHECK_MSG(content != NULL && clen > 0, "expected the untried line to remain");
     if (content) {
-        CHECK_CONTAINS(content, "offline_quota_ev");
+        CHECK_CONTAINS(content, "replay_second");    /* untried — kept */
+        CHECK_NOT_CONTAINS(content, "replay_first");  /* accepted — dropped */
         free(content);
     }
 
@@ -281,6 +289,6 @@ void suite_ratelimit(void) {
     test_state();
     test_sender_gate();
     test_quota_gate();
-    test_quota_keeps_offline_replay();
+    test_quota_replay_drops_delivered_keeps_rest();
     test_shutdown_spills_held_queue();
 }

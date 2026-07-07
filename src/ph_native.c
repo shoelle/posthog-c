@@ -156,15 +156,19 @@ static void offline_spill(const char *body, size_t len) {
     fclose(f);
 }
 
-/* Replay spilled batches oldest-first. On the first failure, stop and keep the
- * rest (still offline) so order is preserved and we don't hammer the network. */
+/* Replay spilled batches oldest-first. A 2xx is accepted and dropped from the
+ * spill — a quota_limited 200 still accepted the request (its events were
+ * server-dropped), so re-sending won't recover them, matching how send_batch
+ * treats a delivered batch. Stop replaying on the first transient failure, or
+ * once a response arms the rate limiter, keeping the untried remainder so order
+ * is preserved and we don't hammer a throttle. */
 static void offline_replay(void) {
     char path[PH_PATH_CAP + 32];
     long sz;
     FILE *f;
     char *buf;
     size_t rd, i, line_start;
-    int failed = 0;
+    int stopped = 0;
     ph_strbuf keep;
 
     if (!g_ph.offline_path[0]) return;
@@ -189,13 +193,18 @@ static void offline_replay(void) {
         if (i != rd && buf[i] != '\n') continue;
         if (i > line_start) {
             size_t linelen = i - line_start;
-            int keep_line = failed;
-            if (!failed) {
+            int keep_line;
+            if (stopped) {
+                keep_line = 1; /* never attempted — keep for a later drain */
+            } else {
                 int status = post_and_note(buf + line_start, linelen);
-                if (status < 200 || status >= 300 ||
-                    ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) {
-                    failed = 1;
-                    keep_line = 1;
+                if (status >= 200 && status < 300) {
+                    keep_line = 0; /* accepted (even a quota 200) — drop it */
+                    if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()))
+                        stopped = 1; /* ...but hold the untried remainder */
+                } else {
+                    keep_line = 1; /* transient failure — keep and stop */
+                    stopped = 1;
                 }
             }
             if (keep_line) {
