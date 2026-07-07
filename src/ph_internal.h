@@ -35,9 +35,11 @@
 
 /* Exception payload caps. Error capture is not the product-event hot path, but
  * the structured $exception_list still stays bounded before it enters the fixed
- * event blob. */
+ * event blob. The frame count is an upper bound; in practice the event blob
+ * (PH_EVENT_DATA_CAP) is what limits how many frames fit — build_exception_list
+ * stops early and truncates gracefully. Raise both together for deeper stacks. */
 #ifndef PH_MAX_EXCEPTION_FRAMES
-#define PH_MAX_EXCEPTION_FRAMES 4
+#define PH_MAX_EXCEPTION_FRAMES 32
 #endif
 #ifndef PH_EXCEPTION_FIELD_CAP
 #define PH_EXCEPTION_FIELD_CAP 96

@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 #ifndef PH_EVENT_DATA_CAP
-#define PH_EVENT_DATA_CAP 2048
+#define PH_EVENT_DATA_CAP 4096
 #endif
 
 typedef enum ph_event_kind {

@@ -459,6 +459,11 @@ static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
     ph_strbuf_append_cstr(out, "},\"stacktrace\":{\"type\":\"raw\",\"frames\":[");
     for (i = 0; !omit_frames && ex->frames && i < frame_count; i++) {
         const ph_stackframe *f = &ex->frames[i];
+        /* Stop before a frame would push the payload past the event blob, so a
+         * deep stack degrades to as-many-as-fit rather than the packer dropping
+         * the whole $exception_list. Checked before the separator so we never
+         * leave a trailing comma. */
+        if (out->len > (size_t)PH_EVENT_DATA_CAP - 512) break;
         if (i > 0) ph_strbuf_append_char(out, ',');
         ph_strbuf_append_cstr(out, "{\"platform\":\"custom\",\"lang\":\"cpp\",\"in_app\":");
         ph_json_bool(out, f->in_app);

@@ -170,6 +170,42 @@ void suite_exception(void) {
         ph_shutdown();
     }
 
+    /* --- a deep stack of long frames truncates gracefully, not dropped whole --- */
+    {
+        ph_config cfg;
+        ph_stackframe frames[PH_MAX_EXCEPTION_FRAMES];
+        char bigname[PH_EXCEPTION_FIELD_CAP];
+        ph_exception ex;
+        int i;
+        init_sdk(&cfg);
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+
+        memset(bigname, 'a', sizeof(bigname) - 1);
+        bigname[sizeof(bigname) - 1] = '\0';
+        memset(frames, 0, sizeof(frames));
+        for (i = 0; i < PH_MAX_EXCEPTION_FRAMES; i++) {
+            frames[i].function = bigname; /* ~field-cap long: blob budget binds */
+            frames[i].in_app = 1;
+        }
+        memset(&ex, 0, sizeof(ex));
+        ex.type = "Deep";
+        ex.message = "long";
+        ex.handled = 1;
+        ex.frames = frames;
+        ex.frame_count = PH_MAX_EXCEPTION_FRAMES;
+        ph_capture_exception(&ex);
+        ph_flush(2000);
+
+        /* All PH_MAX_EXCEPTION_FRAMES long frames overflow the event blob; if
+         * truncation were all-or-nothing the whole list would vanish. */
+        CHECK(mock_batch_count() == 1);
+        CHECK_CONTAINS(mock_batch(0), "\"$exception_list\":[{");
+        CHECK_CONTAINS(mock_batch(0), "\"function\":");
+        ph_shutdown();
+    }
+
     /* --- super props on exceptions are still denylist-scrubbed --- */
     {
         ph_config cfg;
