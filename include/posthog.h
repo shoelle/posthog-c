@@ -168,7 +168,8 @@ typedef struct ph_config {
     int max_batch;          /* events per POST (default 50) */
     int max_queue;          /* drop-oldest ring cap (default 1000) */
     int request_timeout_ms; /* per-POST timeout (default 10000) */
-    int max_retries;        /* per-batch retries before spill/drop (default 3) */
+    int max_retries;        /* per-batch retries (exp backoff; 5xx/timeout only)
+                             * before spill/drop (default 3) */
 
     const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only */
     const char *release;      /* e.g. "myapp@1.2.3" — tags every event */

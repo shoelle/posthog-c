@@ -53,4 +53,7 @@ typedef void (*ph_thread_fn)(void *arg);
 int ph_thread_start(ph_thread *t, ph_thread_fn fn, void *arg);
 void ph_thread_join(ph_thread *t);
 
+/* Sleep the calling thread for `ms` milliseconds (no-op if ms <= 0). */
+void ph_sleep_ms(int ms);
+
 #endif /* PH_THREAD_H */

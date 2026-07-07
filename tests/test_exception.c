@@ -170,6 +170,37 @@ void suite_exception(void) {
         ph_shutdown();
     }
 
+    /* --- super props on exceptions are still denylist-scrubbed --- */
+    {
+        ph_config cfg;
+        ph_props sp;
+        ph_exception ex;
+        static const char *deny[] = {"secret_super"};
+        init_sdk(&cfg);
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 1;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+
+        ph_props_init(&sp);
+        ph_props_set_str(&sp, "secret_super", "leak");
+        ph_props_set_str(&sp, "keep_super", "ok");
+        ph_register(&sp);
+
+        memset(&ex, 0, sizeof(ex));
+        ex.type = "E";
+        ex.message = "m";
+        ex.handled = 1;
+        ph_capture_exception(&ex);
+        ph_flush(2000);
+
+        CHECK_CONTAINS(mock_batch(0), "\"keep_super\":\"ok\"");
+        CHECK_NOT_CONTAINS(mock_batch(0), "secret_super");
+        CHECK_NOT_CONTAINS(mock_batch(0), "leak");
+        ph_shutdown();
+    }
+
     /* --- unhandled => level error --- */
     {
         ph_config cfg;

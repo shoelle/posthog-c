@@ -128,6 +128,16 @@ void suite_capture(void) {
         ph_shutdown();
     }
 
+    /* --- a client error (4xx) is deterministic and is NOT retried --- */
+    {
+        init_test_sdk();
+        mock_set_status(400);
+        ph_capture("bad_request", NULL);
+        ph_flush(2000);
+        CHECK(mock_batch_count() == 1); /* one attempt only */
+        ph_shutdown();
+    }
+
     /* --- disabled SDK is a no-op and safe --- */
     {
         ph_config cfg;

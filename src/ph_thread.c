@@ -56,6 +56,10 @@ void ph_thread_join(ph_thread *t) {
     t->h = NULL;
 }
 
+void ph_sleep_ms(int ms) {
+    if (ms > 0) Sleep((DWORD)ms);
+}
+
 #else /* POSIX */
 
 #include <errno.h>
@@ -119,6 +123,14 @@ void ph_thread_join(ph_thread *t) {
     if (!t->started) return;
     pthread_join(t->t, NULL);
     t->started = 0;
+}
+
+void ph_sleep_ms(int ms) {
+    struct timespec ts;
+    if (ms <= 0) return;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&ts, NULL);
 }
 
 #endif

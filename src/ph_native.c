@@ -204,10 +204,10 @@ static void remove_key(ph_props *p, const char *key) {
     }
 }
 
-/* Scrub one event: strip denylisted keys and run before_send. Returns 1 to
- * keep (blob rewritten in place) or 0 to drop. The event's $groups entries are
- * preserved untouched — the scrubber only sees scalar user properties. */
-static int scrub_one(ph_event *e) {
+/* Scrub one event: strip denylisted keys, and (when run_before_send is set) run
+ * before_send. Returns 1 to keep (blob rewritten in place) or 0 to drop.
+ * Non-scalar entries ($groups, $exception_list) are preserved untouched. */
+static int scrub_one(ph_event *e, int run_before_send) {
     char name[128];
     char *blob = e->data + e->name_len + e->did_len;
     size_t len = e->blob_len;
@@ -243,7 +243,8 @@ static int scrub_one(ph_event *e) {
     }
 
     for (i = 0; i < g_ph.denylist_count; i++) remove_key(&props, g_ph.denylist[i]);
-    if (g_ph.before_send && !g_ph.before_send(name, &props, g_ph.user_data))
+    if (run_before_send && g_ph.before_send &&
+        !g_ph.before_send(name, &props, g_ph.user_data))
         return 0;
 
     nb = ph_pack_props(&props, tmp, sizeof(tmp));
@@ -265,14 +266,38 @@ static int scrub_events(ph_event *evs, int n) {
     if (!g_ph.before_send && g_ph.denylist_count == 0) return n;
     for (i = 0; i < n; i++) {
         int kind = evs[i].kind;
-        if ((evs[i].flags & PH_EVF_SCRUBBED) == 0 &&
-            (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) &&
-            !scrub_one(&evs[i]))
-            continue; /* dropped by the scrubber */
+        if (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) {
+            /* Exceptions pre-scrub at capture (before_send already ran), but
+             * super props / groups are stamped afterward — so still re-apply the
+             * denylist to those, just don't run the hook a second time. */
+            if (evs[i].flags & PH_EVF_SCRUBBED) {
+                if (g_ph.denylist_count > 0) scrub_one(&evs[i], 0);
+            } else if (!scrub_one(&evs[i], 1)) {
+                continue; /* dropped by before_send */
+            }
+        }
         if (out != i) evs[out] = evs[i];
         out++;
     }
     return out;
+}
+
+/* Sleep up to `ms` in small chunks, returning 1 the moment shutdown is
+ * requested — so retry backoff never delays ph_shutdown by the full schedule. */
+static int sender_backoff_wait(int ms) {
+    int slept = 0;
+    while (slept < ms) {
+        int stop, chunk;
+        ph_mutex_lock(&g_ph.flush_lock);
+        stop = g_ph.stop;
+        ph_mutex_unlock(&g_ph.flush_lock);
+        if (stop) return 1;
+        chunk = ms - slept;
+        if (chunk > 50) chunk = 50;
+        ph_sleep_ms(chunk);
+        slept += chunk;
+    }
+    return 0;
 }
 
 static void send_batch(ph_event *evs, int n) {
@@ -291,10 +316,21 @@ static void send_batch(ph_event *evs, int n) {
         return;
     }
 
+    /* Retry only failures a retry can plausibly fix: 5xx, timeouts, and network
+     * errors (status < 0). 2xx succeeded; 4xx is a deterministic client error
+     * (bad key/body) that won't change. Exponential backoff between attempts,
+     * interruptible on shutdown. */
     attempts = g_ph.max_retries >= 0 ? g_ph.max_retries + 1 : 1;
     for (attempt = 0; attempt < attempts; attempt++) {
+        if (attempt > 0) {
+            int shift = attempt - 1 > 6 ? 6 : attempt - 1; /* clamp: avoid overflow */
+            int backoff = 100 << shift;
+            if (backoff > 2000) backoff = 2000;
+            if (sender_backoff_wait(backoff)) break; /* shutdown requested */
+        }
         status = post_body(body.data ? body.data : "", body.len);
-        if (status >= 200 && status < 300) break;
+        if (status >= 200 && status < 300) break; /* delivered */
+        if (status >= 400 && status < 500) break; /* client error: won't change */
     }
     if (status < 200 || status >= 300) {
         if (g_ph.offline_path[0]) {
