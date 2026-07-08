@@ -9,15 +9,16 @@ fills that gap on top of PostHog's raw ingestion API.
 > C ABI, non-blocking capture, a background sender, and `/batch/` delivery over
 > plaintext HTTP (for a local dev proxy) are working and tested — as are
 > anonymous-by-default identity, a `before_send` scrubber, a property denylist,
-> a capture rate limiter, an offline disk queue (spill/replay), and gzip'd
+> a capture rate limiter, server backpressure (honoring `429`/`Retry-After` and
+> PostHog's quota signal), an offline disk queue (spill/replay), and gzip'd
 > batches (`Content-Encoding: gzip`). HTTPS works
 > on Windows (validated via WinHTTP against real `us.i.posthog.com`), and the
 > **WebAssembly backend** (a shim over the browser's `window.posthog`) is
 > verified for native/wasm parity under Node. Native errors ship as full PostHog
 > `$exception` events (raw stack frames + mechanism), and **feature flags**
-> evaluate remotely with a local cache. Linux/macOS TLS is the main gap left on
-> the [roadmap](#roadmap). This is an exploratory build, developed openly; see
-> [DESIGN.md](DESIGN.md) for the plan.
+> evaluate remotely with a local cache. Linux/macOS TLS and native crash
+> handling are the main gaps left on the [roadmap](#roadmap). This is an
+> exploratory build, developed openly; see [DESIGN.md](DESIGN.md) for the plan.
 
 ## Why
 
@@ -116,27 +117,18 @@ posthog-c/
 ├── third_party/   # vendored sdefl (single-file gzip compressor; MIT / public domain)
 ├── build.zig      # single build entry point (also a consumable module)
 ├── DESIGN.md      # architecture, event/wire model, roadmap, tradeoffs
+├── TODO.md        # roadmap + backlog
 ├── CLAUDE.md      # working notes: conventions + module map
 └── AGENTS.md      # short guide for coding agents
 ```
 
 ## Roadmap
 
-v0.1 is the first slice; each stage below is independently useful.
-
-1. **v0.1 — Core + native capture** ✅ C ABI, ring queue, background sender,
-   `/batch/` over plaintext, mock-transport tests.
-2. **Privacy + reliability** ✅ `before_send` scrubber, `property_denylist`,
-   capture rate limiter, offline disk queue (spill/replay), drop telemetry.
-3. **v0.2 — Native TLS** ✅ (Windows) validated HTTPS to real `us.i.posthog.com`
-   via WinHTTP. Linux/macOS TLS (vendored BearSSL) still to come.
-4. **v0.3 — WASM shim** ✅ `EM_ASM` into `window.posthog`; native/wasm parity
-   verified under Node (`zig build test-wasm`).
-5. **v0.5 — Error tracking** ✅ `ph_capture_exception` → the full `$exception_list`
-   payload (mechanism + raw stack frames).
-6. **v0.7 — Feature flags** ✅ remote `/flags/` eval + local cache,
-   `$feature_flag_called` exposure.
-7. **v0.6 — Crash breadcrumb / Crashpad hooks.**
+The native capture pipeline, privacy/reliability layer (including server
+backpressure), Windows TLS, WASM shim, error tracking, and feature flags are in;
+crash handling and Linux/macOS TLS are the main open items. See
+[TODO.md](TODO.md) for what's next and why, and [DESIGN.md](DESIGN.md) for the
+staged plan and the architecture behind it.
 
 ## License
 
