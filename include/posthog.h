@@ -192,6 +192,13 @@ typedef struct ph_config {
     const char *const *property_denylist; /* keys stripped from every event
                                            * before send (§10); NULL = none */
     int property_denylist_count;          /* number of keys in property_denylist */
+
+    int crash_handler; /* install the in-process signal_crash handler (POSIX
+                        * signals / Windows SEH): a fatal native crash is
+                        * persisted and shipped as a $exception on the next
+                        * launch. Default 0 = off (opt-in — it installs
+                        * process-global handlers). Requires offline_path.
+                        * Native only; wasm ignores it. */
 } ph_config;
 
 /*
@@ -268,7 +275,11 @@ void ph_register(const ph_props *super_props);
 /* Drop one super property by key. */
 void ph_unregister(const char *key);
 
-/* Report a structured error as a $exception event (§8). */
+/* Report a structured error as a $exception event (§8). This is the
+ * app-reported ("posthog_exception") path — you caught something and want it
+ * tracked. It is NOT a crash handler: for fatal native crashes, set
+ * cfg.crash_handler (the signal_crash handler routes through here on the next
+ * launch). */
 void ph_capture_exception(const ph_exception *ex);
 
 /* --- Feature flags (§9) ----------------------------------------------

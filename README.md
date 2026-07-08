@@ -15,10 +15,12 @@ fills that gap on top of PostHog's raw ingestion API.
 > on Windows (validated via WinHTTP against real `us.i.posthog.com`), and the
 > **WebAssembly backend** (a shim over the browser's `window.posthog`) is
 > verified for native/wasm parity under Node. Native errors ship as full PostHog
-> `$exception` events (raw stack frames + mechanism), and **feature flags**
-> evaluate remotely with a local cache. Linux/macOS TLS and native crash
-> handling are the main gaps left on the [roadmap](#roadmap). This is an
-> exploratory build, developed openly; see [DESIGN.md](DESIGN.md) for the plan.
+> `$exception` events (raw stack frames + mechanism); an **opt-in crash handler**
+> turns a fatal native crash (POSIX signal / Windows SEH) into a `$exception`
+> replayed on the next launch; and **feature flags** evaluate remotely with a
+> local cache. Linux/macOS TLS and out-of-process minidump symbolication are the
+> main gaps left on the [roadmap](#roadmap). This is an exploratory build,
+> developed openly; see [DESIGN.md](DESIGN.md) for the plan.
 
 ## Why
 
@@ -125,8 +127,10 @@ posthog-c/
 ## Roadmap
 
 The native capture pipeline, privacy/reliability layer (including server
-backpressure), Windows TLS, WASM shim, error tracking, and feature flags are in;
-crash handling and Linux/macOS TLS are the main open items. See
+backpressure), Windows TLS, WASM shim, error tracking, feature flags, and
+in-process crash capture (native signals / Windows SEH → a `$exception` on the
+next launch) are in; Linux/macOS TLS and the out-of-process minidump pipeline
+(the separate `posthog-crash` service) are the main open items. See
 [TODO.md](TODO.md) for what's next and why, and [DESIGN.md](DESIGN.md) for the
 staged plan and the architecture behind it.
 

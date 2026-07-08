@@ -170,7 +170,8 @@ customer's own integration reference:
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |
 | **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |
-| v0.6 | Crash breadcrumb / Crashpad setup hooks |
+| **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) → a persisted `$exception` replayed next launch; module+offset frames (§8) |
+| later | out-of-process `minidump_crash` (Crashpad + the separate `posthog-crash` service) |
 
 ## 7. Tradeoffs & open questions
 
@@ -203,3 +204,43 @@ customer's own integration reference:
    emit the gzip container. Native only: the wasm backend leaves compression to
    posthog-js. Chosen over miniz for being far smaller and compress-only, which
    is all we need.
+
+## 8. Native crash capture (`signal_crash`, v0.6)
+
+Three origins produce a `$exception`, distinguished by how the crash was caught
+(the `posthog-exception` naming convention keeps this straight in the code):
+
+| Origin | What catches it | Where |
+|---|---|---|
+| `posthog_exception` | app calls `ph_capture_exception` (handled) | `ph_core.c` |
+| `signal_crash` | in-process POSIX signal / Windows SEH handler | `ph_crash.c` (v0.6) |
+| `minidump_crash` | out-of-process Crashpad minidump | future; the `posthog-crash` service |
+
+`signal_crash` (opt in with `cfg.crash_handler`, requires `offline_path`) turns a
+fatal native fault into a `$exception` delivered on the **next** launch — a crashed
+process can't reliably reach the network, so the flow is *crash → persist →
+replay*, which reuses the offline spill's replay half and the `ph_capture_exception`
+serializer wholesale. Only two pieces are new: the OS handler and the crash-record
+format.
+
+- **The handler stays minimal.** It runs in a dying process, so it snapshots only
+  the signal, the faulting address, and the stack, then `write()`s one fixed
+  record — no JSON, no `malloc`, on a static scratch buffer and (POSIX) a 64 KB
+  `sigaltstack` so a stack-overflow crash still has room. The faulting
+  instruction (from the crash context's `RIP`/`PC`) leads the trace, since the
+  captured top frames are the handler + dispatcher themselves.
+- **Frames are `(module, offset)`, not absolute addresses.** ASLR relocates
+  modules between the crash and the replay, so an absolute address from the dead
+  process is meaningless in the next one. The handler resolves each address to
+  its module base (`dladdr` / `GetModuleHandleEx`) and stores `basename + offset`
+  — stable across runs and resolvable by a symbol server. Turning offsets into
+  function names needs the debug info, which is the `minidump_crash` server's
+  job; the SDK deliberately stops at capture. This also means **no `dbghelp`/
+  symbol dependency** in the SDK.
+- **Known limits (honest v0.6).** The per-frame module lookup takes the loader
+  lock, so a crash *inside* the loader can stall the handler — the fundamental
+  reason robust capture is out-of-process (Crashpad). The replayed event is
+  timestamped at next launch, not crash time. Both are documented in
+  [`TODO.md`](TODO.md); the answer to both is the `minidump_crash` path, not more
+  in-process cleverness. The Windows path is validated against a real fault
+  end-to-end; the POSIX path compiles for Linux in CI and is verified there.

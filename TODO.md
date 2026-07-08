@@ -7,31 +7,31 @@ log, not here.
 
 Priorities: 🔴 high · 🟡 medium · 🟢 low.
 
-## Crash handling (v0.6) 🔴
+## signal_crash follow-ups 🟡
 
-Native crash capture — POSIX signals (`SIGSEGV`/`SIGABRT`/`SIGBUS`/…) and the
-Windows unhandled-exception filter — that turns a crash into a persisted
-`$exception` and sends it on the next run. It builds on the existing
-`ph_capture_exception` → `$exception_list` path (v0.5); the new work is the OS
-hook, done **async-signal-safely**.
+v0.6 shipped the in-process `signal_crash` handler — POSIX signals
+(`SIGSEGV`/`SIGABRT`/`SIGBUS`/…) and the Windows unhandled-exception filter →
+a persisted `$exception` replayed on the next launch, with module+offset frames.
+See [DESIGN.md](DESIGN.md) §8. What's left on this path:
 
-Prior art / techniques to lean on:
-- **In-process vs out-of-process.** In-process signal handlers are the simplest
-  first cut; an out-of-process handler (the model [Google
-  Breakpad](https://chromium.googlesource.com/breakpad/breakpad/) and its
-  successor [Crashpad](https://chromium.googlesource.com/crashpad/crashpad/) use)
-  survives heap corruption and yields minidumps — a reasonable later escalation.
-  Pick the backend at compile time.
-- **Async-signal-safety** (`man 7 signal-safety`): no `malloc`/locks/stdio inside
-  the handler. The usual trick is a pre-`mmap`'d page allocator for any
-  unavoidable allocation.
-- **Two-phase handler**: the signal handler only snapshots the crash context and
-  hands off to a thread; unwinding, serialization, and writing happen off-signal.
-- **Pre-serialized breadcrumbs**: append recent breadcrumbs to a rotating file
-  during the normal run so crash time needs no lock — the same lock-free instinct
-  as our capture path.
-- Crash → envelope on disk → replayed next run; our offline spill already does
-  the replay half.
+- **Out-of-process `minidump_crash` 🟡.** In-process capture can't survive heap
+  corruption and takes the loader lock during the per-frame module lookup (a
+  crash *inside* the loader can stall the handler). The robust answer is a
+  Crashpad-style out-of-process handler writing a minidump, symbolicated
+  server-side by the separate **`posthog-crash`** service against a symbol store
+  — that is where function *names* come from (we emit module+offset). Pick the
+  backend at compile time. Prior art:
+  [Breakpad](https://chromium.googlesource.com/breakpad/breakpad/),
+  [Crashpad](https://chromium.googlesource.com/crashpad/crashpad/).
+- **Crash-time timestamps 🟢.** The replayed `$exception` is stamped at
+  next-launch time, not when the crash happened. Record a wall-clock estimate in
+  the crash record and inject it as the event `timestamp` at replay (needs an
+  explicit-timestamp path through the serializer).
+- **POSIX runtime verification 🟢.** The Windows SEH path is validated against a
+  real fault end-to-end; the POSIX `sigaction` path is compile-checked (Linux
+  cross-build) and still needs a real-fault integration test on the Linux/macOS
+  CI runners (a subprocess that faults, mirroring the Windows one). glibc
+  `backtrace()` is absent on musl — document or guard.
 
 ## Client-side drop reporting 🟡
 
@@ -51,7 +51,8 @@ off-Windows. Can't be verified from a Windows dev box. See DESIGN.md §7.1.
 - **Elaborate on-disk run directories, lockfiles, and tiered cache pruning** (as
   full crash-reporting stacks carry): they exist to persist crash state +
   minidump attachments and to tell a crashed process from a running one. Our
-  single bounded NDJSON spill is the right size until crash handling lands.
+  single bounded NDJSON spill plus a one-shot crash record is the right size for
+  in-process `signal_crash`; richer on-disk state is a `minidump_crash` concern.
 - **Discarding 5xx**: we retry 5xx with backoff — the better default for a
   transient server blip. Keep it.
 - **Session replay**: no DOM/canvas from C, and a privacy liability. Excluded

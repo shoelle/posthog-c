@@ -16,6 +16,7 @@ const c_sources = [_][]const u8{
     "src/ph_ratelimit.c",
     "src/ph_http.c",
     "src/ph_tls.c",
+    "src/ph_crash.c",
     "src/ph_core.c",
     "src/ph_native.c",
 };
@@ -42,6 +43,7 @@ const test_sources = [_][]const u8{
     "tests/test_gzip.c",
     "tests/test_http.c",
     "tests/test_ratelimit.c",
+    "tests/test_crash.c",
 };
 
 fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
@@ -50,8 +52,14 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
             step.linkSystemLibrary("ws2_32"); // Winsock (plaintext HTTP transport)
             step.linkSystemLibrary("winhttp"); // HTTPS transport (ph_tls.c)
         },
-        // pthreads for the sender thread + condvars (part of libc on glibc/musl,
-        // but requesting it explicitly is harmless and correct elsewhere).
+        // Linux: dl for dladdr (signal_crash module lookup); pthread for the
+        // sender thread. glibc backtrace() lives in libc.
+        .linux => {
+            step.linkSystemLibrary("pthread");
+            step.linkSystemLibrary("dl");
+        },
+        // macOS et al.: dladdr/backtrace are in libSystem; pthread is part of
+        // libc, but requesting it explicitly is harmless and correct.
         else => step.linkSystemLibrary("pthread"),
     }
 }

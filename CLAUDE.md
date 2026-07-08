@@ -32,6 +32,7 @@ src/ph_flags.c           feature flags: /flags/ fetch, cache, $feature_flag_call
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
 src/ph_tls.c             HTTPS via WinHTTP (Windows); BearSSL for Linux/macOS is next
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
+src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a persisted $exception replayed next run
 src/ph_wasm.c            WASM backend: the full API as an EM_ASM shim over window.posthog
 src/ph_queue.{h,c}       bounded drop-oldest ring; owns the ph_event record
 src/ph_props.c           ph_props setters + compact packer

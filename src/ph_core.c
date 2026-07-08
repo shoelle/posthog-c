@@ -9,6 +9,7 @@
  * for free.
  */
 #include "ph_internal.h"
+#include "ph_crash.h"
 #include "ph_http.h"
 #include "ph_json.h"
 #include "ph_str.h"
@@ -201,6 +202,19 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.enabled = 1;
     ph__sender_start();
 
+    /* signal_crash (v0.6): first replay any crash a previous run persisted — it
+     * ships as a $exception through the normal path — then arm the handler for
+     * this run. Needs offline_path to survive the restart. */
+    if (cfg->crash_handler) {
+        if (g_ph.offline_path[0]) {
+            ph_signal_crash_replay(g_ph.offline_path);
+            ph_signal_crash_install(g_ph.offline_path);
+        } else {
+            ph_log(PH_LOG_WARN, "crash_handler set but offline_path is empty; "
+                                "signal_crash disabled");
+        }
+    }
+
     /* Preload flags so the first frame has answers (§9). One blocking round
      * trip; opt out with preload_flags = 0. */
     if (cfg->preload_flags) ph__flags_fetch();
@@ -209,6 +223,7 @@ ph_result ph_init(const ph_config *cfg) {
 
 void ph_shutdown(void) {
     if (!g_ph.initialized) return;
+    ph_signal_crash_uninstall(); /* idempotent; restores prior fault disposition */
     if (g_ph.enabled) {
         ph__sender_stop_and_join();
         if (g_ph.transport.destroy) g_ph.transport.destroy(g_ph.transport.self);
