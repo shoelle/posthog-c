@@ -25,4 +25,13 @@ ph_result ph_http_build_request(const char *url, const char *body,
                                 size_t body_len, const char *content_encoding,
                                 ph_strbuf *out);
 
+/* Parse the bounded response prefix used by the send path. Internal/testable:
+ * returns the HTTP status and fills Retry-After plus a decoded body prefix. */
+int ph__http_parse_response_meta(const char *resp, size_t resp_len,
+                                 ph_send_meta *meta);
+
+/* True once the send path has enough response bytes to stop reading without
+ * waiting for connection close. */
+int ph__http_send_response_complete(const char *resp, size_t resp_len);
+
 #endif /* PH_HTTP_H */

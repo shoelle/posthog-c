@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-void suite_http(void) {
+static void test_request_builder(void) {
     ph_strbuf out;
     ph_result r;
     const char *body = "{\"x\":1}"; /* 7 bytes */
@@ -49,4 +49,58 @@ void suite_http(void) {
     r = ph_http_build_request("ftp://nope/", body, strlen(body), NULL, &out);
     CHECK(r == PH_ERR);
     ph_strbuf_free(&out);
+}
+
+static void test_send_response_meta(void) {
+    ph_send_meta meta;
+    const char *plain =
+        "HTTP/1.1 429 Too Many Requests\r\n"
+        "Retry-After: 2\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+    const char *chunked =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "11\r\n"
+        "{\"quota_limited\":"
+        "\r\n"
+        "B\r\n"
+        "[\"events\"]}"
+        "\r\n"
+        "0\r\n"
+        "\r\n";
+    const char *partial_chunked =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "\r\n"
+        "11\r\n"
+        "{\"quota_limited\":"
+        "\r\n";
+    const char *close_delimited =
+        "HTTP/1.1 200 OK\r\n"
+        "\r\n"
+        "{";
+
+    memset(&meta, 0, sizeof meta);
+    CHECK(ph__http_parse_response_meta(plain, strlen(plain), &meta) == 429);
+    CHECK(strcmp(meta.retry_after, "2") == 0);
+    CHECK(strcmp(meta.body, "") == 0);
+    CHECK(ph__http_send_response_complete(plain, strlen(plain)));
+
+    memset(&meta, 0, sizeof meta);
+    CHECK(ph__http_parse_response_meta(chunked, strlen(chunked), &meta) == 200);
+    CHECK(strcmp(meta.body, "{\"quota_limited\":[\"events\"]}") == 0);
+    CHECK_NOT_CONTAINS(meta.body, "\r\nB\r\n");
+    CHECK(ph__http_send_response_complete(chunked, strlen(chunked)));
+
+    CHECK(!ph__http_send_response_complete(partial_chunked,
+                                           strlen(partial_chunked)));
+    CHECK(ph__http_send_response_complete(close_delimited,
+                                          strlen(close_delimited)));
+}
+
+void suite_http(void) {
+    test_request_builder();
+    test_send_response_meta();
 }

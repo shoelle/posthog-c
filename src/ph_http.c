@@ -157,6 +157,16 @@ static int parse_status(const char *resp, size_t n) {
     return (resp[i] - '0') * 100 + (resp[i + 1] - '0') * 10 + (resp[i + 2] - '0');
 }
 
+static const char *find_header_end(const char *buf, size_t n) {
+    size_t i;
+    for (i = 0; i + 3 < n; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+            buf[i + 2] == '\r' && buf[i + 3] == '\n')
+            return buf + i;
+    }
+    return NULL;
+}
+
 /* Copy the value of a "Retry-After:" header (case-insensitive, matched at a
  * line start) out of a raw response head into `out` (trimmed, NUL-terminated).
  * `out[0]` is set to '\0' when the header is absent. */
@@ -203,6 +213,172 @@ static long scan_content_length(const char *buf, size_t n) {
         }
     }
     return -1;
+}
+
+static int scan_transfer_chunked(const char *buf, size_t n) {
+    static const char key[] = "transfer-encoding:";
+    static const char token[] = "chunked";
+    const size_t klen = sizeof(key) - 1;
+    const size_t tlen = sizeof(token) - 1;
+    size_t i;
+
+    for (i = 0; i + klen <= n; i++) {
+        size_t k = 0;
+        if (i != 0 && buf[i - 1] != '\n') continue;
+        while (k < klen && (char)tolower((unsigned char)buf[i + k]) == key[k]) k++;
+        if (k == klen) {
+            size_t j = i + klen;
+            while (j < n && buf[j] != '\r' && buf[j] != '\n') {
+                size_t start, len, m;
+                while (j < n && (buf[j] == ' ' || buf[j] == '\t' || buf[j] == ','))
+                    j++;
+                start = j;
+                while (j < n && buf[j] != ',' && buf[j] != '\r' &&
+                       buf[j] != '\n' && buf[j] != ' ' && buf[j] != '\t')
+                    j++;
+                len = j - start;
+                if (len == tlen) {
+                    for (m = 0; m < tlen; m++) {
+                        if ((char)tolower((unsigned char)buf[start + m]) != token[m])
+                            break;
+                    }
+                    if (m == tlen) return 1;
+                }
+                while (j < n && buf[j] != ',' && buf[j] != '\r' && buf[j] != '\n')
+                    j++;
+            }
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static int hex_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static size_t copy_chunked_prefix(const char *body, size_t body_len,
+                                  char *out, size_t out_cap, int *complete) {
+    size_t pos = 0, copied = 0;
+    if (complete) *complete = 0;
+    if (out && out_cap) out[0] = '\0';
+
+    while (pos < body_len) {
+        size_t chunk_len = 0, avail, take;
+        int digits = 0;
+
+        while (pos < body_len && (body[pos] == ' ' || body[pos] == '\t')) pos++;
+        while (pos < body_len) {
+            int hv = hex_value(body[pos]);
+            if (hv < 0) break;
+            if (chunk_len <= ((size_t)-1 - (size_t)hv) / 16)
+                chunk_len = chunk_len * 16 + (size_t)hv;
+            else
+                chunk_len = (size_t)-1;
+            pos++;
+            digits = 1;
+        }
+        if (!digits) break;
+
+        while (pos < body_len && body[pos] != '\n') pos++;
+        if (pos >= body_len) break;
+        pos++;
+
+        if (chunk_len == 0) {
+            if (complete) *complete = 1;
+            break;
+        }
+
+        avail = body_len - pos;
+        take = avail < chunk_len ? avail : chunk_len;
+        if (out && out_cap && copied + 1 < out_cap) {
+            size_t room = out_cap - 1 - copied;
+            size_t copy = take < room ? take : room;
+            if (copy) {
+                memcpy(out + copied, body + pos, copy);
+                copied += copy;
+                out[copied] = '\0';
+            }
+        }
+        if (out_cap && copied + 1 >= out_cap) break;
+        if (avail < chunk_len) break;
+
+        pos += chunk_len;
+        if (pos >= body_len) break;
+        if (body[pos] == '\r') {
+            if (pos + 1 >= body_len) break;
+            if (body[pos + 1] != '\n') break;
+            pos += 2;
+        } else if (body[pos] == '\n') {
+            pos++;
+        } else {
+            break;
+        }
+    }
+    return copied;
+}
+
+static void copy_body_prefix(const char *body, size_t body_len, int chunked,
+                             char *out, size_t out_cap, int *complete) {
+    if (complete) *complete = 0;
+    if (!out || out_cap == 0) return;
+    out[0] = '\0';
+    if (chunked) {
+        copy_chunked_prefix(body, body_len, out, out_cap, complete);
+    } else {
+        size_t copy = body_len < out_cap - 1 ? body_len : out_cap - 1;
+        if (copy) memcpy(out, body, copy);
+        out[copy] = '\0';
+        if (complete) *complete = 1;
+    }
+}
+
+int ph__http_parse_response_meta(const char *resp, size_t resp_len,
+                                 ph_send_meta *meta) {
+    const char *sep = find_header_end(resp, resp_len);
+    size_t head_len = sep ? (size_t)(sep - resp) : resp_len;
+    int status = parse_status(resp, resp_len);
+
+    if (meta) {
+        meta->body[0] = '\0';
+        scan_retry_after(resp, head_len, meta->retry_after,
+                         sizeof meta->retry_after);
+        if (sep) {
+            const char *b = sep + 4;
+            size_t blen = resp_len - (size_t)(b - resp);
+            int chunked = scan_transfer_chunked(resp, head_len);
+            copy_body_prefix(b, blen, chunked, meta->body, sizeof meta->body, NULL);
+        }
+    }
+    return status;
+}
+
+int ph__http_send_response_complete(const char *resp, size_t resp_len) {
+    const char *sep = find_header_end(resp, resp_len);
+    long content_len;
+    size_t head_len, body_have;
+
+    if (!sep) return 0;
+    head_len = (size_t)(sep - resp);
+    body_have = resp_len - (size_t)((sep + 4) - resp);
+
+    if (scan_transfer_chunked(resp, head_len)) {
+        char prefix[PH_RESP_BODY_CAP];
+        int chunked_complete = 0;
+        size_t prefix_len = copy_chunked_prefix(sep + 4, body_have, prefix,
+                                                sizeof prefix, &chunked_complete);
+        return chunked_complete || prefix_len >= PH_RESP_BODY_CAP - 1;
+    }
+
+    content_len = scan_content_length(resp, head_len);
+    if (content_len >= 0)
+        return body_have >= (size_t)content_len ||
+               body_have >= PH_RESP_BODY_CAP - 1;
+
+    return body_have >= PH_RESP_BODY_CAP - 1 || body_have > 0;
 }
 
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
@@ -274,45 +450,20 @@ static int do_http(const char *url, const char *body, size_t body_len,
 
     if (!out) {
         /* Read the (small) response: status line, headers including any
-         * Retry-After, and the body prefix carrying a quota-limit notice. A
-         * telemetry 2xx body is tiny and the server closes (Connection: close),
-         * so a bounded read captures it all. */
+         * Retry-After, and the body prefix carrying a quota-limit notice.
+         * Stop at Content-Length, a complete chunked body, or the prefix cap. */
         char resp[4096];
         size_t total = 0;
-        long content_len = -1;
-        const char *sep = NULL;
         for (;;) {
             int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
             if (n <= 0) break;
             total += (size_t)n;
             resp[total] = '\0';
-            if (!sep) {
-                sep = strstr(resp, "\r\n\r\n");
-                if (sep) content_len = scan_content_length(resp, (size_t)(sep - resp));
-            }
-            if (sep) {
-                size_t body_have = total - (size_t)((sep + 4) - resp);
-                if (content_len >= 0 && body_have >= (size_t)content_len) break;
-                if (body_have >= PH_RESP_BODY_CAP - 1) break;
-                if (content_len < 0 && body_have > 0) break;
-            }
+            if (ph__http_send_response_complete(resp, total)) break;
             if (total >= sizeof(resp) - 1) break;
         }
         if (total > 0) {
-            status = parse_status(resp, total);
-            if (meta) {
-                scan_retry_after(resp, total, meta->retry_after,
-                                 sizeof meta->retry_after);
-                if (sep) {
-                    const char *b = sep + 4;
-                    size_t blen = total - (size_t)(b - resp);
-                    size_t copy = blen < sizeof(meta->body) - 1
-                                      ? blen
-                                      : sizeof(meta->body) - 1;
-                    memcpy(meta->body, b, copy);
-                    meta->body[copy] = '\0';
-                }
-            }
+            status = ph__http_parse_response_meta(resp, total, meta);
         }
     } else {
         /* Read the whole response, parse the status, copy the body past the
