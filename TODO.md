@@ -40,16 +40,6 @@ what we discarded, broken down by reason (rate-limited / queue-overflow /
 `before_send`) and category, so client-side loss is visible on the server
 instead of silently invisible. Low risk; purely additive telemetry.
 
-## Torn-spill-line resilience 🟢 (verified real)
-
-`offline_replay` treats the final buffer segment as a line even when it has no
-trailing newline. A process killed mid-write to the spill file therefore leaves
-a partial batch that replay POSTs on every run (server 400 → line kept → poisons
-the queue). `offline_spill` always appends `\n`, so a clean spill always ends on
-a newline — the fix is to drop a final segment that isn't newline-terminated
-(and/or skip a line that fails to serialize). Small, pure correctness.
-Location: [`src/ph_native.c`](src/ph_native.c) `offline_replay`.
-
 ## Linux/macOS TLS 🟢
 
 v0.2 shipped WinHTTP on Windows; Linux (vendored BearSSL) and macOS (Secure

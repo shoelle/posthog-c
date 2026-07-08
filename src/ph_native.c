@@ -189,8 +189,8 @@ static void offline_replay(void) {
 
     ph_strbuf_init(&keep);
     line_start = 0;
-    for (i = 0; i <= rd; i++) {
-        if (i != rd && buf[i] != '\n') continue;
+    for (i = 0; i < rd; i++) {
+        if (buf[i] != '\n') continue;
         if (i > line_start) {
             size_t linelen = i - line_start;
             int keep_line;
@@ -214,6 +214,13 @@ static void offline_replay(void) {
         }
         line_start = i + 1;
     }
+    /* offline_spill newline-terminates every record, so any bytes past the last
+     * '\n' are a torn write from a process killed mid-spill. Drop them (never
+     * copied into `keep`, so the rewrite below discards them): a partial batch
+     * would 400 on every run and poison the queue forever. */
+    if (line_start < rd)
+        ph_log(PH_LOG_WARN, "offline: dropping torn %lu-byte trailing spill record",
+               (unsigned long)(rd - line_start));
     free(buf);
 
     if (keep.len == 0) {

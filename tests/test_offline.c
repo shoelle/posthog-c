@@ -44,6 +44,24 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+/* Write exactly the given bytes (no trailing newline added) — used to forge a
+ * torn spill file, as a process killed mid-write would leave behind. */
+static void write_file(const char *path, const char *data) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(data, 1, strlen(data), f);
+    fclose(f);
+}
+
+static int any_batch_contains(const char *needle) {
+    int i, n = mock_batch_count();
+    for (i = 0; i < n; i++) {
+        const char *b = mock_batch(i);
+        if (b && strstr(b, needle)) return 1;
+    }
+    return 0;
+}
+
 void suite_offline(void) {
     char dir[256], path[300];
     ph_config cfg;
@@ -87,6 +105,36 @@ void suite_offline(void) {
     CHECK_CONTAINS(mock_batch(0), "offline_ev");
     content = read_file(path, &clen);
     CHECK_MSG(content == NULL || clen == 0, "expected the spill file drained");
+    if (content) free(content);
+
+    /* --- torn spill line: a process killed mid-spill leaves a partial batch
+     * with no trailing newline. offline_spill always newline-terminates a
+     * record, so replay must drop that torn tail rather than POST it forever
+     * (a 400 loop that would poison the queue on every run). --- */
+
+    /* (a) torn-only file: nothing valid to send; the file must be discarded. */
+    mock_reset();
+    write_file(path, "{\"batch\":\"torn_only\""); /* note: no trailing '\n' */
+    ph_flush(2000);
+    CHECK_MSG(!any_batch_contains("torn_only"),
+              "a torn (unterminated) spill line must not be POSTed");
+    content = read_file(path, &clen);
+    CHECK_MSG(content == NULL || clen == 0,
+              "a torn-only spill file must be discarded, not retained");
+    if (content) free(content);
+
+    /* (b) one complete record then a torn tail: the complete line replays, the
+     * torn tail is dropped, and the file drains clean. */
+    mock_reset();
+    write_file(path, "{\"batch\":\"good_line\"}\n{\"batch\":\"torn_tail\"");
+    ph_flush(2000);
+    CHECK_MSG(any_batch_contains("good_line"),
+              "the complete record before a torn tail must still replay");
+    CHECK_MSG(!any_batch_contains("torn_tail"),
+              "the torn tail after a complete record must be dropped");
+    content = read_file(path, &clen);
+    CHECK_MSG(content == NULL || clen == 0,
+              "spill file must drain once the torn tail is dropped");
     if (content) free(content);
 
     ph_shutdown();
