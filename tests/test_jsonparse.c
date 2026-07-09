@@ -1,6 +1,7 @@
 #include "ph_jsonval.h"
 #include "test_util.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 void suite_jsonparse(void) {
@@ -66,5 +67,20 @@ void suite_jsonparse(void) {
         ph_jv *v2 = ph_jv_parse(bad2, strlen(bad2));
         CHECK(v1 == NULL);
         CHECK(v2 == NULL);
+    }
+
+    /* deeply nested input is rejected at the depth cap, not a stack overflow
+     * (found by the fuzzer; without the cap this crashes the runner). */
+    {
+        size_t n = 100000, i;
+        char *deep = (char *)malloc(n);
+        if (deep) {
+            ph_jv *v;
+            for (i = 0; i < n; i++) deep[i] = '[';
+            v = ph_jv_parse(deep, n);
+            CHECK(v == NULL); /* rejected, not crashed */
+            ph_jv_free(v);    /* NULL-safe */
+            free(deep);
+        }
     }
 }

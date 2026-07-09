@@ -26,7 +26,13 @@ typedef struct {
     const char *end;
 } cursor;
 
-static ph_jv *parse_value(cursor *c);
+/* Cap recursion so a deeply nested (possibly malicious) /flags/ body can't blow
+ * the stack — real responses nest only a handful deep. Tunable via -D. */
+#ifndef PH_JV_MAX_DEPTH
+#define PH_JV_MAX_DEPTH 128
+#endif
+
+static ph_jv *parse_value(cursor *c, int depth);
 
 static void skip_ws(cursor *c) {
     while (c->p < c->end) {
@@ -233,7 +239,7 @@ static ph_jv *parse_literal(cursor *c) {
     return NULL;
 }
 
-static ph_jv *parse_array(cursor *c) {
+static ph_jv *parse_array(cursor *c, int depth) {
     ph_jv *v = node_new(PH_JV_ARR);
     if (!v) return NULL;
     c->p++; /* '[' */
@@ -246,7 +252,7 @@ static ph_jv *parse_array(cursor *c) {
         ph_jv *item;
         ph_jv **grown;
         skip_ws(c);
-        item = parse_value(c);
+        item = parse_value(c, depth + 1);
         if (!item) {
             ph_jv_free(v);
             return NULL;
@@ -277,7 +283,7 @@ static ph_jv *parse_array(cursor *c) {
     }
 }
 
-static ph_jv *parse_object(cursor *c) {
+static ph_jv *parse_object(cursor *c, int depth) {
     ph_jv *v = node_new(PH_JV_OBJ);
     if (!v) return NULL;
     c->p++; /* '{' */
@@ -305,7 +311,7 @@ static ph_jv *parse_object(cursor *c) {
         }
         c->p++;
         skip_ws(c);
-        val = parse_value(c);
+        val = parse_value(c, depth + 1);
         if (!val) {
             free(key);
             ph_jv_free(v);
@@ -342,12 +348,13 @@ static ph_jv *parse_object(cursor *c) {
     }
 }
 
-static ph_jv *parse_value(cursor *c) {
+static ph_jv *parse_value(cursor *c, int depth) {
     skip_ws(c);
     if (c->p >= c->end) return NULL;
+    if (depth > PH_JV_MAX_DEPTH) return NULL; /* too deeply nested — reject */
     switch (*c->p) {
-        case '{': return parse_object(c);
-        case '[': return parse_array(c);
+        case '{': return parse_object(c, depth);
+        case '[': return parse_array(c, depth);
         case '"': return parse_string(c);
         case 't':
         case 'f':
@@ -362,7 +369,7 @@ ph_jv *ph_jv_parse(const char *s, size_t n) {
     if (!s) return NULL;
     c.p = s;
     c.end = s + n;
-    v = parse_value(&c);
+    v = parse_value(&c, 0);
     return v; /* trailing content is tolerated (responses may have none) */
 }
 
