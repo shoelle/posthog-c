@@ -149,6 +149,22 @@ void suite_offline(void) {
     CHECK_MSG(content == NULL || clen == 0, "a 4xx batch must be dropped, not spilled");
     if (content) free(content);
 
+    /* --- retryable 4xx: 408 Request Timeout is a transient timeout, not a
+     * deterministic bad request. It should retry like other transient failures
+     * and spill for a later replay if the retries exhaust. --- */
+    mock_reset();
+    mock_set_status(408);
+    ph_capture("request_timeout_ev", NULL);
+    ph_flush(2000);
+    CHECK_MSG(mock_batch_count() == 4, "a 408 must be retried like a timeout");
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0, "a 408 batch must spill after retries");
+    if (content) {
+        CHECK_CONTAINS(content, "request_timeout_ev");
+        free(content);
+    }
+    remove(path);
+
     /* --- 4xx on replay: each rejected record is dropped and replay continues
      * to the next, rather than keeping the poison line and stopping (which
      * blocked everything queued behind it). --- */
@@ -162,6 +178,24 @@ void suite_offline(void) {
     CHECK_MSG(content == NULL || clen == 0,
               "4xx-rejected spill records must be dropped, not retained");
     if (content) free(content);
+
+    /* --- 408 on replay: unlike deterministic 4xx rejects, a timeout keeps the
+     * attempted line and the untried remainder for a later drain. --- */
+    mock_reset();
+    mock_set_status(408);
+    write_file(path, "{\"batch\":\"timeout_a\"}\n{\"batch\":\"timeout_b\"}\n");
+    ph_flush(2000);
+    CHECK_MSG(mock_batch_count() == 1,
+              "replay must stop on 408 after the first attempted record");
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0,
+              "408-rejected spill records must be retained for retry");
+    if (content) {
+        CHECK_CONTAINS(content, "timeout_a");
+        CHECK_CONTAINS(content, "timeout_b");
+        free(content);
+    }
+    remove(path);
 
     ph_shutdown();
     remove(path);

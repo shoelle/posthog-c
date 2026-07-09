@@ -161,11 +161,11 @@ static void offline_spill(const char *body, size_t len) {
     fclose(f);
 }
 
-/* A deterministic client error - a 4xx other than 429 backpressure. Retrying or
- * persisting it just fails again forever, so drop it rather than spill/keep and
- * block the queue behind it. */
+/* A deterministic client error - a 4xx other than 429 backpressure or 408
+ * timeout. Retrying/persisting deterministic rejects just fails again forever,
+ * so drop those rather than spill/keep and block the queue behind them. */
 static int is_permanent_reject(int status) {
-    return status >= 400 && status < 500 && status != 429;
+    return status >= 400 && status < 500 && status != 408 && status != 429;
 }
 
 /* Replay spilled batches oldest-first. A 2xx is accepted and dropped from the
@@ -413,12 +413,12 @@ static void send_batch(ph_event *evs, int n) {
         return;
     }
 
-    /* Retry only failures a retry can plausibly fix: 5xx, timeouts, and network
-     * errors (status < 0). 2xx succeeded; 4xx is a deterministic client error
-     * (bad key/body) that won't change. A 429 (or a 503 carrying Retry-After)
-     * is server backpressure: post_and_note arms the limiter, and we stop
-     * retrying rather than hammering the throttle. Exponential backoff between
-     * attempts, interruptible on shutdown. */
+    /* Retry only failures a retry can plausibly fix: 5xx, 408/timeouts, and
+     * network errors (status < 0). 2xx succeeded; deterministic 4xx rejects
+     * (bad key/body) won't change. A 429 (or a 503 carrying Retry-After) is
+     * server backpressure: post_and_note arms the limiter, and we stop retrying
+     * rather than hammering the throttle. Exponential backoff between attempts,
+     * interruptible on shutdown. */
     attempts = g_ph.max_retries >= 0 ? g_ph.max_retries + 1 : 1;
     for (attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0) {
@@ -429,7 +429,7 @@ static void send_batch(ph_event *evs, int n) {
         }
         status = post_and_note(body.data ? body.data : "", body.len);
         if (status >= 200 && status < 300) break; /* delivered */
-        if (status >= 400 && status < 500) break; /* client error: won't change */
+        if (is_permanent_reject(status)) break; /* client error: won't change */
         if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break; /* backpressure */
     }
     if (status < 200 || status >= 300) {
