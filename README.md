@@ -1,26 +1,12 @@
 # posthog-c
 
-A small, embeddable **PostHog SDK for C and C++** - for native apps and game
-engines that PostHog's existing libraries don't cover. PostHog ships JS,
-Python, Go, Rust, .NET, and mobile SDKs, but nothing for a C++ engine; this
-fills that gap on top of PostHog's raw ingestion API.
+A small, embeddable **PostHog SDK for C and C++**, for native apps and game
+engines. PostHog ships JS, Python, Go, Rust, .NET, and mobile SDKs but nothing
+for a C++ engine; this fills that gap on top of PostHog's raw ingestion API.
 
-> **Status:** pre-1.0 and developed openly, but already broad. The C ABI,
-> non-blocking capture, a background sender, and `/batch/` delivery over
-> plaintext HTTP (for a local dev proxy) are working and tested - as are
-> anonymous-by-default identity, a `before_send` scrubber, a property denylist,
-> a capture rate limiter, server backpressure (honoring `429`/`Retry-After` and
-> PostHog's quota signal), an offline disk queue (spill/replay), and gzip'd
-> batches (`Content-Encoding: gzip`). HTTPS works
-> on Windows (validated via WinHTTP against real `us.i.posthog.com`), and the
-> **WebAssembly backend** (a shim over the browser's `window.posthog`) is
-> verified for native/wasm parity under Node. Native errors ship as full PostHog
-> `$exception` events (raw stack frames + mechanism); an **opt-in crash handler**
-> turns a fatal native crash (POSIX signal / Windows SEH) into a `$exception`
-> replayed on the next launch; and **feature flags** evaluate remotely with a
-> local cache. Linux/macOS TLS and out-of-process minidump symbolication are the
-> main gaps left on the [roadmap](#roadmap). This is an exploratory build,
-> developed openly; see [DESIGN.md](DESIGN.md) for the plan.
+> **Status:** pre-1.0. The native and wasm backends work end to end; HTTPS
+> currently needs Windows (WinHTTP), which is the main platform gap. See the
+> [roadmap](#roadmap) below and [DESIGN.md](DESIGN.md) for the architecture.
 
 ## Why
 
@@ -122,19 +108,18 @@ posthog-c/
 ├── build.zig      # single build entry point (also a consumable module)
 ├── DESIGN.md      # architecture, event/wire model, roadmap, tradeoffs
 ├── TODO.md        # roadmap + backlog
-├── CLAUDE.md      # working notes: conventions + module map
-└── AGENTS.md      # short guide for coding agents
+├── AGENTS.md      # coding brief: conventions, module map, invariants
+└── CLAUDE.md      # pointer to AGENTS.md
 ```
 
 ## Roadmap
 
-The native capture pipeline, privacy/reliability layer (including server
-backpressure), Windows TLS, WASM shim, error tracking, feature flags, and
-in-process crash capture (native signals / Windows SEH -> a `$exception` on the
-next launch) are in; Linux/macOS TLS and the out-of-process minidump pipeline
-(the separate `posthog-crash` service) are the main open items. See
-[TODO.md](TODO.md) for what's next and why, and [DESIGN.md](DESIGN.md) for the
-staged plan and the architecture behind it.
+Shipped: native + wasm capture, gzip'd `/batch/` delivery, an offline disk queue,
+server backpressure, the privacy layer (`before_send`, property denylist, rate
+limiter), error tracking with an opt-in native crash handler, and remote feature
+flags. Open: Linux/macOS TLS and the out-of-process minidump pipeline (the
+separate `posthog-crash` service). See [TODO.md](TODO.md) for what's next and why,
+and [DESIGN.md](DESIGN.md) for the staged plan and the architecture behind it.
 
 ## License
 

@@ -237,7 +237,7 @@ format.
   function names needs the debug info, which is the `minidump_crash` server's
   job; the SDK deliberately stops at capture. This also means **no `dbghelp`/
   symbol dependency** in the SDK.
-- **Known limits (honest v0.6).** The per-frame module lookup takes the loader
+- **Known limits (v0.6).** The per-frame module lookup takes the loader
   lock, so a crash *inside* the loader can stall the handler - the fundamental
   reason robust capture is out-of-process (Crashpad). The replayed event is
   timestamped at next launch, not crash time. Both are documented in
