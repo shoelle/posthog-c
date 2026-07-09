@@ -121,13 +121,13 @@ void ph__flags_fetch(void) {
         return;
     }
 
-    resp = (char *)malloc(65536);
+    resp = (char *)malloc(PH_FLAGS_RESP_CAP);
     if (!resp) {
         ph_strbuf_free(&body);
         return;
     }
     status = t.fetch(t.self, url, body.data ? body.data : "{}", body.len,
-                     g_ph.request_timeout_ms, resp, 65536);
+                     g_ph.request_timeout_ms, resp, PH_FLAGS_RESP_CAP);
     if (status >= 200 && status < 300)
         ph__flags_ingest(resp, strlen(resp));
     else

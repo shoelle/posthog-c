@@ -191,6 +191,9 @@ static void scan_retry_after(const char *buf, size_t n, char *out, size_t cap) {
     }
 }
 
+/* ~100 MB Content-Length sanity ceiling: our responses are tiny, and this keeps
+ * the length accumulation from overflowing on a hostile header. */
+#define PH_HTTP_MAX_CONTENT_LEN 100000000L
 static long scan_content_length(const char *buf, size_t n) {
     static const char key[] = "content-length:";
     const size_t klen = sizeof(key) - 1;
@@ -205,7 +208,7 @@ static long scan_content_length(const char *buf, size_t n) {
             while (j < n && (buf[j] == ' ' || buf[j] == '\t')) j++;
             if (j >= n || buf[j] < '0' || buf[j] > '9') return -1;
             while (j < n && buf[j] >= '0' && buf[j] <= '9') {
-                if (len > 100000000L) return 100000000L;
+                if (len > PH_HTTP_MAX_CONTENT_LEN) return PH_HTTP_MAX_CONTENT_LEN;
                 len = len * 10 + (long)(buf[j] - '0');
                 j++;
             }

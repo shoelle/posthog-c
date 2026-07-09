@@ -32,7 +32,7 @@ static int g_enabled = 0;
 static int g_identity_ok = 0;
 static ph_before_send_fn g_before_send = NULL;
 static void *g_user_data = NULL;
-static char g_denylist[PH_MAX_PROPS][PH_KEY_CAP];
+static char g_denylist[PH_MAX_DENYLIST][PH_KEY_CAP];
 static int g_denylist_count = 0;
 static ph_props g_super;
 
@@ -151,7 +151,7 @@ ph_result ph_init(const ph_config *cfg) {
     ph_props_init(&g_super);
     if (cfg->property_denylist && cfg->property_denylist_count > 0) {
         n = cfg->property_denylist_count;
-        if (n > PH_MAX_PROPS) n = PH_MAX_PROPS;
+        if (n > PH_MAX_DENYLIST) n = PH_MAX_DENYLIST;
         for (i = 0; i < n; i++) {
             if (cfg->property_denylist[i] && cfg->property_denylist[i][0])
                 copy_capped(g_denylist[g_denylist_count++], PH_KEY_CAP,

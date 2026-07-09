@@ -14,6 +14,7 @@
 #include "ph_json.h"
 #include "ph_str.h"
 #include "ph_time.h"
+#include "ph_tls.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -201,6 +202,12 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.transport = ph_http_transport_create();
     g_ph.enabled = 1;
     ph__sender_start();
+
+    /* Warn at startup if https is configured but this build has no TLS backend
+     * for the platform - otherwise every batch would silently fail. */
+    if (strncmp(g_ph.api_host, "https://", 8) == 0 && !ph_tls_available())
+        ph_log(PH_LOG_WARN, "api_host is https:// but no TLS backend is built for "
+                            "this platform; batches will fail (use an http:// proxy)");
 
     /* signal_crash (v0.6): first replay any crash a previous run persisted - it
      * ships as a $exception through the normal path - then arm the handler for
@@ -481,7 +488,7 @@ static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
          * deep stack degrades to as-many-as-fit rather than the packer dropping
          * the whole $exception_list. Checked before the separator so we never
          * leave a trailing comma. */
-        if (out->len > (size_t)PH_EVENT_DATA_CAP - 512) break;
+        if (out->len > (size_t)PH_EVENT_DATA_CAP - PH_EXCEPTION_BLOB_RESERVE) break;
         if (i > 0) ph_strbuf_append_char(out, ',');
         ph_strbuf_append_cstr(out, "{\"platform\":\"custom\",\"lang\":\"cpp\",\"in_app\":");
         ph_json_bool(out, f->in_app);

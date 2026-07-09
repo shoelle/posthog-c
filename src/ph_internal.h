@@ -29,10 +29,8 @@
 #define PH_MAX_GROUPS 4
 #endif
 
-/* Property keys stripped from every event before send (privacy denylist). */
-#ifndef PH_MAX_DENYLIST
-#define PH_MAX_DENYLIST 16
-#endif
+/* PH_MAX_DENYLIST (privacy-denylist key cap) is a public cap in posthog.h, so
+ * both the native and wasm backends honor the same limit. */
 
 /* Exception payload caps. Error capture is not the product-event hot path, but
  * the structured $exception_list still stays bounded before it enters the fixed
@@ -45,6 +43,11 @@
 #ifndef PH_EXCEPTION_FIELD_CAP
 #define PH_EXCEPTION_FIELD_CAP 96
 #endif
+#ifndef PH_EXCEPTION_BLOB_RESERVE
+#define PH_EXCEPTION_BLOB_RESERVE 512 /* bytes kept free in the event blob so a
+                                       * deep stack stops adding frames instead
+                                       * of overflowing the whole payload */
+#endif
 
 /* Feature-flag cache (remote eval). */
 #ifndef PH_MAX_FLAGS
@@ -55,6 +58,9 @@
 #endif
 #ifndef PH_FLAG_PAYLOAD_CAP
 #define PH_FLAG_PAYLOAD_CAP 512
+#endif
+#ifndef PH_FLAGS_RESP_CAP
+#define PH_FLAGS_RESP_CAP 65536 /* /flags/ response read buffer */
 #endif
 
 /* Offline persistence: batches that fail to send spill to one append-only

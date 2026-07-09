@@ -151,8 +151,12 @@ static void offline_spill(const char *body, size_t len) {
         ph_log(PH_LOG_WARN, "offline: cannot open spill file %s", path);
         return;
     }
-    fwrite(body, 1, len, f);
-    fputc('\n', f);
+    /* Only newline-terminate a fully-written record; a short write leaves the
+     * partial unterminated so offline_replay's torn-tail guard drops it. */
+    if (fwrite(body, 1, len, f) == len)
+        fputc('\n', f);
+    else
+        ph_log(PH_LOG_WARN, "offline: short write spilling to %s", path);
     fclose(f);
 }
 
@@ -228,8 +232,13 @@ static void offline_replay(void) {
     } else {
         f = fopen(path, "wb");
         if (f) {
-            fwrite(keep.data, 1, keep.len, f);
+            if (fwrite(keep.data, 1, keep.len, f) != keep.len)
+                ph_log(PH_LOG_WARN, "offline: short write rewriting spill; "
+                                    "delivered records may re-send");
             fclose(f);
+        } else {
+            ph_log(PH_LOG_WARN, "offline: cannot rewrite spill %s; "
+                                "delivered records may re-send", path);
         }
     }
     ph_strbuf_free(&keep);
@@ -378,6 +387,15 @@ static void spill_queued(ph_event *scratch) {
                "(set offline_path to persist)", spilled);
 }
 
+/* Exponential backoff between batch-POST retries: PH_RETRY_BASE_MS << attempt,
+ * capped at PH_RETRY_MAX_MS. */
+#ifndef PH_RETRY_BASE_MS
+#define PH_RETRY_BASE_MS 100
+#endif
+#ifndef PH_RETRY_MAX_MS
+#define PH_RETRY_MAX_MS 2000
+#endif
+
 static void send_batch(ph_event *evs, int n) {
     ph_strbuf body;
     int status = -1;
@@ -404,8 +422,8 @@ static void send_batch(ph_event *evs, int n) {
     for (attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0) {
             int shift = attempt - 1 > 6 ? 6 : attempt - 1; /* clamp: avoid overflow */
-            int backoff = 100 << shift;
-            if (backoff > 2000) backoff = 2000;
+            int backoff = PH_RETRY_BASE_MS << shift;
+            if (backoff > PH_RETRY_MAX_MS) backoff = PH_RETRY_MAX_MS;
             if (sender_backoff_wait(backoff)) break; /* shutdown requested */
         }
         status = post_and_note(body.data ? body.data : "", body.len);

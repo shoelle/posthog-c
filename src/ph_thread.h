@@ -42,6 +42,8 @@ void ph_mutex_unlock(ph_mutex *m);
 
 void ph_cond_init(ph_cond *c);
 void ph_cond_destroy(ph_cond *c);
+/* Wake one waiter. Unused by the SDK today (the sender broadcasts); kept to
+ * round out the primitive set. */
 void ph_cond_signal(ph_cond *c);
 void ph_cond_broadcast(ph_cond *c);
 /* Wait until signaled or `timeout_ms` elapses. Returns 1 if the wait timed

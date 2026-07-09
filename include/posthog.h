@@ -56,6 +56,9 @@ const char *ph_version(void);
 #ifndef PH_VAL_CAP
 #define PH_VAL_CAP 192 /* max string-value bytes, incl. NUL */
 #endif
+#ifndef PH_MAX_DENYLIST
+#define PH_MAX_DENYLIST 16 /* max property_denylist keys honored (per backend) */
+#endif
 
 /* --- Result codes ----------------------------------------------------- */
 
