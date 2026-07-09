@@ -215,6 +215,9 @@ static long scan_content_length(const char *buf, size_t n) {
     return -1;
 }
 
+/* True if a "Transfer-Encoding:" header lists the "chunked" coding. Matches the
+ * header name at a line start (case-insensitive) and scans its comma-separated
+ * token list, so "gzip, chunked" also counts. */
 static int scan_transfer_chunked(const char *buf, size_t n) {
     static const char key[] = "transfer-encoding:";
     static const char token[] = "chunked";
@@ -260,6 +263,11 @@ static int hex_value(char c) {
     return -1;
 }
 
+/* Decode an HTTP chunked body into a bounded prefix buffer: for each
+ * "<hexlen> CRLF <data> CRLF" chunk, append data (NUL-terminated, capped at
+ * out_cap) until the 0-length terminator, a chunk that runs past the bytes on
+ * hand, or the cap. Sets *complete iff the terminating 0-chunk was reached.
+ * Returns bytes copied. */
 static size_t copy_chunked_prefix(const char *body, size_t body_len,
                                   char *out, size_t out_cap, int *complete) {
     size_t pos = 0, copied = 0;
@@ -274,6 +282,8 @@ static size_t copy_chunked_prefix(const char *body, size_t body_len,
         while (pos < body_len) {
             int hv = hex_value(body[pos]);
             if (hv < 0) break;
+            /* accumulate hex digits, saturating at SIZE_MAX rather than wrapping
+             * on a hostile/oversized chunk length */
             if (chunk_len <= ((size_t)-1 - (size_t)hv) / 16)
                 chunk_len = chunk_len * 16 + (size_t)hv;
             else
@@ -356,6 +366,10 @@ int ph__http_parse_response_meta(const char *resp, size_t resp_len,
     return status;
 }
 
+/* True once enough of the response is in hand to stop reading (rather than wait
+ * for the peer to close): the 0-chunk for chunked, Content-Length bytes when
+ * given, else any body at all. Either path also stops once the bounded prefix
+ * fills — we only need the status and the small quota notice, not the body. */
 int ph__http_send_response_complete(const char *resp, size_t resp_len) {
     const char *sep = find_header_end(resp, resp_len);
     long content_len;

@@ -25,6 +25,9 @@ void ph_queue_free(ph_queue *q) {
     }
 }
 
+/* Producer: evict-if-full, then return the tail slot to fill in place. Returns
+ * with q->lock held; ph_queue_end_push publishes the slot and unlocks. Keep the
+ * fill between the two calls short. */
 ph_event *ph_queue_begin_push(ph_queue *q) {
     int idx;
     ph_mutex_lock(&q->lock);
@@ -38,6 +41,7 @@ ph_event *ph_queue_begin_push(ph_queue *q) {
     return &q->slots[idx];
 }
 
+/* Publish the slot ph_queue_begin_push returned, then release q->lock. */
 void ph_queue_end_push(ph_queue *q) {
     q->size++;
     ph_mutex_unlock(&q->lock);

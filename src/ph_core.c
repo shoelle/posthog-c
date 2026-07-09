@@ -445,6 +445,7 @@ void ph_unregister(const char *key) {
     ph_mutex_unlock(&g_ph.lock);
 }
 
+/* Emit s as a JSON string literal, truncated to PH_EXCEPTION_FIELD_CAP bytes. */
 static void json_cstr_exception_cap(ph_strbuf *out, const char *s) {
     size_t n = 0;
     if (!s) s = "";
@@ -502,6 +503,10 @@ static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
     ph_strbuf_append_cstr(out, "]}}]");
 }
 
+/* Build the non-frame $exception props, then extract the (possibly scrubbed)
+ * type/message for the caller. Applies the denylist and runs before_send:
+ * returns 0 if before_send vetoed the event (caller drops it), else 1. The
+ * omit_* out-flags report which frame fields the denylist suppresses. */
 static int prepare_exception_props(const ph_exception *ex, ph_props *p,
                                    char *type, size_t type_cap,
                                    char *message, size_t message_cap,

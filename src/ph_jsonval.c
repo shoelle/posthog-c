@@ -159,6 +159,8 @@ static char *parse_string_raw(cursor *c) {
                         return NULL;
                     }
                     p += 5;
+                    /* high surrogate: combine with the following low surrogate
+                     * into a single code point before encoding to UTF-8 */
                     if (cp >= 0xD800 && cp <= 0xDBFF) {
                         unsigned lo;
                         if (p + 6 <= c->end && p[0] == '\\' && p[1] == 'u' &&
