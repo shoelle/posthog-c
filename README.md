@@ -84,17 +84,27 @@ suite on Windows/Linux/macOS and the WASM harness on every push.
 
 ### Consuming it
 
-Vendor this repo as a git submodule and link the static library. From another
-Zig build, `@import` this `build.zig` and call the exported helpers:
+Add posthog-c as a Zig dependency - vendor it (submodule/subtree) and point at it
+by path, or `zig fetch` a tarball:
 
 ```zig
-const posthog = @import("third_party/posthog-c/build.zig");
-const ph = posthog.create(b, target, optimize);
-exe.linkLibrary(ph);
-posthog.addIncludes(b, exe); // makes <posthog.h> / <posthog.hpp> available
+// your build.zig.zon
+.dependencies = .{
+    .posthog_c = .{ .path = "third_party/posthog-c" },
+    // or fetched: .{ .url = "https://github.com/<you>/posthog-c/archive/<rev>.tar.gz", .hash = "..." },
+},
 ```
 
-A CMake `add_subdirectory` shim can wrap the same sources for non-Zig builds.
+```zig
+// your build.zig
+const ph = b.dependency("posthog_c", .{ .target = target, .optimize = optimize });
+exe.linkLibrary(ph.artifact("posthog")); // static lib; carries its own platform libs
+exe.addIncludePath(ph.path("include"));  // <posthog.h> / <posthog.hpp>
+```
+
+The static library pulls in its own platform link dependencies (Winsock + WinHTTP
+on Windows, pthread + dl elsewhere), so linking the artifact is all you need. A
+CMake `add_subdirectory` shim can wrap the same sources for non-Zig builds.
 
 ## Layout
 
