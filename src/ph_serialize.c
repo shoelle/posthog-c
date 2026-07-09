@@ -7,9 +7,9 @@
  * against - both backends must produce the same event shape.
  *
  * Envelope (confirmed against the capture API and the customer's reference):
- *   {"api_key":"…","historical_migration":false,"batch":[ <event>, … ]}
+ *   {"api_key":"...","historical_migration":false,"batch":[ <event>, ... ]}
  * Each <event>:
- *   {"event":"…","timestamp":"ISO-8601","uuid":"…","properties":{ … }}
+ *   {"event":"...","timestamp":"ISO-8601","uuid":"...","properties":{ ... }}
  * Note distinct_id lives *inside* properties for batch items.
  */
 #include "ph_internal.h"
@@ -127,7 +127,7 @@ static void emit_scalar_entries(ph_strbuf *out, int *first, const char *blob,
     }
 }
 
-/* Emit "$groups":{type:key,…} if the blob carries any group entries. */
+/* Emit "$groups":{type:key,...} if the blob carries any group entries. */
 static void emit_groups(ph_strbuf *out, int *first, const char *blob,
                         size_t blob_len) {
     const char *cur = blob, *end = blob + blob_len;

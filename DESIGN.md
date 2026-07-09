@@ -79,7 +79,7 @@ so the sender needs no shared identity state and the ordering rule "events
 captured before `ph_identify` keep the anonymous id" falls out for free.
 
 - **Anonymous by default** (`person_profiles = PH_IDENTIFIED_ONLY`): events
-  carry `$process_person_profile: false` until `ph_identify`, which is ~4×
+  carry `$process_person_profile: false` until `ph_identify`, which is ~4x
   cheaper and the right privacy default for un-signed-in users.
 - `ph_identify` sets the id + emits `$identify` (with `$set` person
   properties); `ph_alias` emits `$create_alias`; `ph_reset` (logout) rolls a
@@ -93,12 +93,12 @@ Straight off the ingestion API. Confirmed against PostHog's capture docs and a
 customer's own integration reference:
 
 ```json
-{ "api_key": "phc_…", "historical_migration": false, "batch": [
+{ "api_key": "phc_...", "historical_migration": false, "batch": [
   { "event": "level_started",
     "timestamp": "2026-07-06T20:06:41.771Z",
     "uuid": "019f390a-436b-7b6e-94a2-2b19a09d01a9",
     "properties": {
-      "distinct_id": "…",            // NOTE: inside properties for batch items
+      "distinct_id": "...",            // NOTE: inside properties for batch items
       "$lib": "posthog-c", "$lib_version": "0.7.0", "$lib_backend": "native",
       "$os": "Windows", "arch": "x86_64", "release": "myapp@1.2.3",
       "$process_person_profile": false,
@@ -149,7 +149,7 @@ customer's own integration reference:
   signals feed the same hold:** standard HTTP `429`/`503` (what an `/ingest`
   proxy - Cloudflare, nginx, a gateway - emits), and PostHog's own event-quota
   notice, which its capture endpoint returns as `200` + a
-  `{"quota_limited": ["events", …]}` body - no `429`, no header. On the quota
+  `{"quota_limited": ["events", ...]}` body - no `429`, no header. On the quota
   body the sender arms the default window; the batch itself was accepted (`200`)
   so it is not resent. The `200`-body detection is PostHog-specific and lives in
   the sender ([`src/ph_native.c`](src/ph_native.c)), keeping `ph_ratelimit` a
@@ -166,10 +166,10 @@ customer's own integration reference:
 |---|---|
 | **v0.1** (done) | C ABI, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
 | **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After` + `quota_limited` body), offline disk queue (spill/replay), `ph_dropped_events()` |
-| **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP → real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
+| **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP -> real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
-| **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |
-| **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) → a persisted `$exception` replayed next launch; module+offset frames |
+| **v0.5 error tracking** (done) | `ph_capture_exception` -> `$exception_list` (mechanism + raw stack frames) |
+| **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) -> a persisted `$exception` replayed next launch; module+offset frames |
 | **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |
 | later | out-of-process `minidump_crash` (Crashpad + the separate `posthog-crash` service) |
 
@@ -218,7 +218,7 @@ Three origins produce a `$exception`, distinguished by how the crash was caught
 
 `signal_crash` (opt in with `cfg.crash_handler`, requires `offline_path`) turns a
 fatal native fault into a `$exception` delivered on the **next** launch - a crashed
-process can't reliably reach the network, so the flow is *crash → persist →
+process can't reliably reach the network, so the flow is *crash -> persist ->
 replay*, which reuses the offline spill's replay half and the `ph_capture_exception`
 serializer wholesale. Only two pieces are new: the OS handler and the crash-record
 format.

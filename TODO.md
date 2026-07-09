@@ -10,7 +10,7 @@ Priorities: 🔴 high · 🟡 medium · 🟢 low.
 ## signal_crash follow-ups 🟡
 
 v0.6 shipped the in-process `signal_crash` handler - POSIX signals
-(`SIGSEGV`/`SIGABRT`/`SIGBUS`/…) and the Windows unhandled-exception filter →
+(`SIGSEGV`/`SIGABRT`/`SIGBUS`/...) and the Windows unhandled-exception filter ->
 a persisted `$exception` replayed on the next launch, with module+offset frames.
 See "Native crash capture" in [DESIGN.md](DESIGN.md). What's left on this path:
 
@@ -74,7 +74,7 @@ for its game-engine niche:
 - **Model offline-spill as a transport** behind the `ph_transport` seam instead
   of special-casing it in the sender - the 429/quota hold would then compose as
   "route to the disk transport while blocked".
-- **Generated string↔enum converters** for public enums - cheap human-readable
+- **Generated string<->enum converters** for public enums - cheap human-readable
   logging across the ABI.
 
 ## Further prior-art dives (if useful)

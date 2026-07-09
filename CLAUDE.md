@@ -45,7 +45,7 @@ src/ph_internal.h        SDK context, transport seam, cross-file helpers
 ```
 
 Data flow (native): `ph_capture` (caller thread) packs a self-contained event
-into the ring → the sender drains it, serializes a batch, and POSTs it. Nothing
+into the ring -> the sender drains it, serializes a batch, and POSTs it. Nothing
 but the ring is touched on the caller thread. On **wasm**, `ph_wasm.c`
 implements the same API by calling straight into `window.posthog`, reusing
 `ph_serialize_props_object` so the property JSON matches the native path

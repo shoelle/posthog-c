@@ -130,7 +130,7 @@ posthog-c/
 
 The native capture pipeline, privacy/reliability layer (including server
 backpressure), Windows TLS, WASM shim, error tracking, feature flags, and
-in-process crash capture (native signals / Windows SEH → a `$exception` on the
+in-process crash capture (native signals / Windows SEH -> a `$exception` on the
 next launch) are in; Linux/macOS TLS and the out-of-process minidump pipeline
 (the separate `posthog-crash` service) are the main open items. See
 [TODO.md](TODO.md) for what's next and why, and [DESIGN.md](DESIGN.md) for the

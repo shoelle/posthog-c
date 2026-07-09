@@ -347,7 +347,7 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     /* $identify builds a profile regardless of policy (profile_mode = 0). */
     submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
 
-    /* Identity changed → re-evaluate flags. Done on the sender thread so
+    /* Identity changed -> re-evaluate flags. Done on the sender thread so
      * ph_identify never blocks on the network. */
     ph_mutex_lock(&g_ph.flush_lock);
     g_ph.flags_refetch = 1;
