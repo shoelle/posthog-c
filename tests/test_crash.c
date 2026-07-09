@@ -18,9 +18,12 @@
 #ifdef _WIN32
 #include <direct.h>
 #define MKDIR(p) _mkdir(p)
+#define RMDIR(p) _rmdir(p)
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #define MKDIR(p) mkdir(p, 0777)
+#define RMDIR(p) rmdir(p)
 #endif
 
 static void temp_dir(char *out, size_t cap) {
@@ -63,6 +66,10 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+#ifndef _WIN32
+static void dummy_sig_handler(int sig) { (void)sig; }
+#endif
+
 void suite_crash(void) {
     ph_crash_info a, b;
     char rec[PH_CRASH_RECORD_MAX];
@@ -70,6 +77,7 @@ void suite_crash(void) {
     size_t n;
     unsigned seh = 0xC0000005u;
     char dir[256], recpath[320];
+    char fresh_dir[256], fresh_probe[320];
     ph_config cfg;
     char *content;
     size_t clen;
@@ -117,6 +125,39 @@ void suite_crash(void) {
     CHECK(strcmp(ph_crash_signal_name(SIGSEGV), "SIGSEGV") == 0);
     CHECK(strcmp(ph_crash_signal_name((int)seh), "EXCEPTION_ACCESS_VIOLATION") == 0);
     CHECK(strcmp(ph_crash_signal_name(1234567), "SIGNAL") == 0);
+
+    /* --- install: a fresh offline/crash directory is created before arming --- */
+    temp_dir(dir, sizeof dir);
+    snprintf(fresh_dir, sizeof fresh_dir, "%s_fresh", dir);
+    snprintf(fresh_probe, sizeof fresh_probe, "%s/probe.bin", fresh_dir);
+    remove(fresh_probe);
+    RMDIR(fresh_dir);
+    CHECK(ph_signal_crash_install(fresh_dir) == 1);
+    ph_signal_crash_uninstall();
+    write_bytes(fresh_probe, "ok", 2);
+    content = read_file(fresh_probe, &clen);
+    CHECK_MSG(content != NULL && clen == 2,
+              "crash install must create a missing offline_path directory");
+    if (content) free(content);
+    remove(fresh_probe);
+    RMDIR(fresh_dir);
+
+#ifndef _WIN32
+    /* --- install/uninstall: POSIX restores the previous signal action --- */
+    {
+        struct sigaction old_sa, dummy_sa, restored_sa;
+        memset(&dummy_sa, 0, sizeof dummy_sa);
+        dummy_sa.sa_handler = dummy_sig_handler;
+        sigemptyset(&dummy_sa.sa_mask);
+        CHECK(sigaction(SIGSEGV, &dummy_sa, &old_sa) == 0);
+        CHECK(ph_signal_crash_install(dir) == 1);
+        ph_signal_crash_uninstall();
+        CHECK(sigaction(SIGSEGV, NULL, &restored_sa) == 0);
+        CHECK_MSG(restored_sa.sa_handler == dummy_sig_handler,
+                  "POSIX crash uninstall must restore the prior SIGSEGV handler");
+        sigaction(SIGSEGV, &old_sa, NULL);
+    }
+#endif
 
     /* --- replay: a forged record ships a $exception through the normal path --- */
     temp_dir(dir, sizeof dir);

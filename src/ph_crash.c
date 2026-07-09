@@ -22,6 +22,19 @@
 #include <string.h>
 #include <signal.h> /* SIG* names for ph_crash_signal_name on all platforms */
 
+#if defined(_WIN32)
+#include <direct.h>
+static void crash_ensure_dir(const char *dir) {
+    if (dir && dir[0]) _mkdir(dir);
+}
+#else
+#include <sys/stat.h>
+#include <sys/types.h>
+static void crash_ensure_dir(const char *dir) {
+    if (dir && dir[0]) mkdir(dir, 0777);
+}
+#endif
+
 /* --- per-frame module lookup (base + basename for an address) ---------- */
 
 #if defined(_WIN32)
@@ -362,6 +375,8 @@ static const int g_posix_sigs[] = {
 #endif
     0
 };
+static struct sigaction g_posix_prev[sizeof(g_posix_sigs) / sizeof(g_posix_sigs[0])];
+static unsigned char g_posix_prev_valid[sizeof(g_posix_sigs) / sizeof(g_posix_sigs[0])];
 
 /* Faulting instruction pointer from the crash context, so it leads the trace
  * (backtrace()'s own top frames are this handler + the signal trampoline).
@@ -375,6 +390,17 @@ static uint64_t posix_fault_pc(void *uctx) {
     (void)uctx;
     return 0;
 #endif
+}
+
+static void posix_restore_for_signal(int sig) {
+    int idx;
+    for (idx = 0; g_posix_sigs[idx]; idx++) {
+        if (g_posix_sigs[idx] == sig && g_posix_prev_valid[idx]) {
+            sigaction(sig, &g_posix_prev[idx], NULL);
+            return;
+        }
+    }
+    signal(sig, SIG_DFL);
 }
 
 static void posix_handler(int sig, siginfo_t *si, void *uctx) {
@@ -407,19 +433,21 @@ static void posix_handler(int sig, siginfo_t *si, void *uctx) {
             close(fd);
         }
     }
-    /* Re-raise on the default disposition so the process dies with the correct
-     * status and a core dump / debugger still fires (SA_RESETHAND already reset
-     * us to SIG_DFL on entry). */
-    signal(sig, SIG_DFL);
+    /* Re-raise into the host's previous disposition so an existing crash handler
+     * (or the default core-dump path) still runs after our record is persisted.
+     * The triggering signal is masked until this handler returns, so raise()
+     * queues it for delivery under the restored disposition. */
+    posix_restore_for_signal(sig);
     raise(sig);
 }
 
 int ph_signal_crash_install(const char *dir) {
     struct sigaction sa;
-    const int *s;
+    int idx;
     void *warm[4];
     if (!dir || !dir[0]) return 0;
     if (g_posix_installed) return 1;
+    crash_ensure_dir(dir);
     crash_path(dir, g_posix_path, sizeof g_posix_path);
 
     /* Warm backtrace() so its lazy first call (which may dlopen/malloc) happens
@@ -439,15 +467,21 @@ int ph_signal_crash_install(const char *dir) {
     sa.sa_sigaction = posix_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
-    for (s = g_posix_sigs; *s; s++) sigaction(*s, &sa, NULL);
+    memset(g_posix_prev_valid, 0, sizeof g_posix_prev_valid);
+    for (idx = 0; g_posix_sigs[idx]; idx++)
+        if (sigaction(g_posix_sigs[idx], &sa, &g_posix_prev[idx]) == 0)
+            g_posix_prev_valid[idx] = 1;
     g_posix_installed = 1;
     return 1;
 }
 
 void ph_signal_crash_uninstall(void) {
-    const int *s;
+    int idx;
     if (!g_posix_installed) return;
-    for (s = g_posix_sigs; *s; s++) signal(*s, SIG_DFL);
+    for (idx = 0; g_posix_sigs[idx]; idx++) {
+        if (g_posix_prev_valid[idx])
+            sigaction(g_posix_sigs[idx], &g_posix_prev[idx], NULL);
+    }
     if (g_altstack.ss_sp) {
         stack_t off;
         memset(&off, 0, sizeof off);
@@ -514,6 +548,7 @@ static LONG WINAPI win_filter(EXCEPTION_POINTERS *ep) {
 int ph_signal_crash_install(const char *dir) {
     if (!dir || !dir[0]) return 0;
     if (g_win_installed) return 1;
+    crash_ensure_dir(dir);
     crash_path(dir, g_win_path, sizeof g_win_path);
     g_prev_filter = SetUnhandledExceptionFilter(win_filter);
     g_win_installed = 1;
