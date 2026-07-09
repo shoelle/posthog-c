@@ -24,11 +24,12 @@ existing struct fields or enum values.
 include/posthog.h        public C ABI (the contract)
 include/posthog.hpp      header-only C++ convenience wrapper
 
-src/ph_core.c            public API + the shared enqueue path
+src/ph_core.c            SDK instance, lifecycle, and the shared enqueue path (ph__submit_event)
+src/ph_exception.c       ph_capture_exception -> $exception event (posthog_exception path)
 src/ph_native.c          sender thread + flush handshake + transport + offline spill/replay
 src/ph_serialize.c       event record -> /batch/ JSON  (parity-critical, pure)
 src/ph_jsonval.c         minimal JSON *parser* (DOM) - used only to read /flags/
-src/ph_flags.c           feature flags: /flags/ fetch, cache, $feature_flag_called
+src/ph_flags.c           feature flags: /flags/ fetch, cache, accessors, $feature_flag_called
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
 src/ph_tls.c             HTTPS via WinHTTP (Windows); BearSSL for Linux/macOS is next
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
@@ -37,6 +38,7 @@ src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a p
 src/ph_wasm.c            WASM backend: the full API as an EM_ASM shim over window.posthog
 src/ph_queue.{h,c}       bounded drop-oldest ring; owns the ph_event record
 src/ph_props.c           ph_props setters + compact packer
+src/ph_util.{h,c}        shared ph_props helpers (copy/remove/find/denylist) - native + wasm
 src/ph_json.{h,c}        write-only JSON encoder over ph_strbuf
 src/ph_str.{h,c}         growable byte buffer
 src/ph_time.{h,c}        monotonic/wall clocks, ISO-8601, UUIDv7

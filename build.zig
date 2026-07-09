@@ -19,6 +19,7 @@ const c_sources = [_][]const u8{
     "src/ph_tls.c",
     "src/ph_crash.c",
     "src/ph_core.c",
+    "src/ph_exception.c",
     "src/ph_native.c",
 };
 

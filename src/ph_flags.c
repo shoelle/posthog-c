@@ -132,7 +132,17 @@ void ph__flags_fetch(void) {
     ph_strbuf_free(&body);
 }
 
-/* --- accessors -------------------------------------------------------- */
+/* --- accessors + public flag API -------------------------------------- */
+
+/* Deduped exposure event, emitted the first time a flag value is read. */
+static void emit_ff_called(const char *key, const char *value) {
+    ph_props p;
+    if (!g_ph.enabled) return;
+    ph_props_init(&p);
+    ph_props_set_str(&p, "$feature_flag", key);
+    ph_props_set_str(&p, "$feature_flag_response", value);
+    ph__submit_event(PH_EV_CAPTURE, 0, "$feature_flag_called", NULL, &p, -1, 1, NULL, 0);
+}
 
 /* Resolve a flag's "value" string (variant, or "true"/"false"), remember it as
  * read for $feature_flag_called dedup, and report whether the flag was cached.
@@ -164,7 +174,7 @@ int ph__flags_is_enabled(const char *key, int fallback) {
     int found;
     if (!key) return fallback;
     found = resolve(key, value, sizeof(value), &enabled, &emit);
-    if (emit) ph__emit_ff_called(key, value);
+    if (emit) emit_ff_called(key, value);
     return found ? enabled : fallback;
 }
 
@@ -175,7 +185,7 @@ ph_result ph__flags_get(const char *key, char *out, int cap) {
     if (!key) return PH_ERR;
     found = resolve(key, value, sizeof(value), NULL, &emit);
     if (found && out && cap > 0) ph_copy_capped(out, (size_t)cap, value);
-    if (emit) ph__emit_ff_called(key, value);
+    if (emit) emit_ff_called(key, value);
     return found ? PH_OK : PH_ERR;
 }
 
@@ -192,4 +202,32 @@ ph_result ph__flags_get_payload(const char *key, char *out, int cap) {
     }
     ph_mutex_unlock(&g_ph.lock);
     return found ? PH_OK : PH_ERR;
+}
+
+/* --- public flag API (thin wrappers over the internal accessors) ------- */
+
+int ph_is_feature_enabled(const char *key, int fallback) {
+    if (!g_ph.enabled) return fallback;
+    return ph__flags_is_enabled(key, fallback);
+}
+
+ph_result ph_get_feature_flag(const char *key, char *out, int cap) {
+    if (!g_ph.enabled) {
+        if (out && cap > 0) out[0] = '\0';
+        return PH_ERR;
+    }
+    return ph__flags_get(key, out, cap);
+}
+
+ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
+    if (!g_ph.enabled) {
+        if (out && cap > 0) out[0] = '\0';
+        return PH_ERR;
+    }
+    return ph__flags_get_payload(key, out, cap);
+}
+
+void ph_reload_feature_flags(void) {
+    if (!g_ph.enabled) return;
+    ph__flags_fetch();
 }

@@ -255,6 +255,15 @@ void ph_serialize_batch(const ph_ctx *ctx, const ph_event *events, int n,
  * so property JSON matches byte-for-byte across native and wasm. */
 void ph_serialize_props_object(const ph_props *p, struct ph_strbuf *out);
 
+/* The shared enqueue path: snapshot identity/super-props/group scoping under
+ * g_ph.lock and pack a self-contained event into the ring. Defined in ph_core.c;
+ * the exception (ph_exception.c) and feature-flag (ph_flags.c) emitters call it.
+ * See ph_core.c for the arg contract (profile_mode, extra/extra_len). */
+void ph__submit_event(int kind, unsigned char base_flags, const char *name,
+                      const char *did_override, const ph_props *props,
+                      int profile_mode, int stamp_super_groups,
+                      const char *extra, size_t extra_len);
+
 /* Log through the configured sink, if any. */
 void ph_log(ph_log_level level, const char *fmt, ...);
 
@@ -269,14 +278,12 @@ void ph__sender_wake(void);
 
 /* Feature flags (ph_flags.c). ingest parses a /flags/ response into the cache;
  * fetch does the network round-trip then ingest; the accessors read the cache
- * and (via ph__emit_ff_called) emit a deduped $feature_flag_called. */
+ * and emit a deduped $feature_flag_called on first read. The public
+ * ph_is_feature_enabled / ph_get_feature_flag(_payload) wrappers live there too. */
 void ph__flags_ingest(const char *json, size_t len);
 void ph__flags_fetch(void);
 int ph__flags_is_enabled(const char *key, int fallback);
 ph_result ph__flags_get(const char *key, char *out, int cap);
 ph_result ph__flags_get_payload(const char *key, char *out, int cap);
-
-/* Emit a deduped $feature_flag_called event (defined in ph_core.c). */
-void ph__emit_ff_called(const char *key, const char *value);
 
 #endif /* PH_INTERNAL_H */

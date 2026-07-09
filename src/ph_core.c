@@ -1,18 +1,20 @@
 /*
- * ph_core.c - the public API surface and the shared enqueue path.
+ * ph_core.c - the SDK instance, lifecycle, and the shared enqueue path.
  *
- * Every public call funnels through submit_event(), which snapshots identity /
- * super-properties / group scoping under one mutex and packs a self-contained
- * event into the ring. Because each event bakes its own distinct_id and profile
- * decision at capture time, the sender needs no shared identity state, and the
- * ordering "events captured before ph_identify keep the anonymous id" falls out
- * for free.
+ * Holds the process-global ph_ctx and the core public API: init/shutdown,
+ * capture, and the identity / super-property / group calls. Every event emitter
+ * funnels through ph__submit_event(), which snapshots identity / super-properties
+ * / group scoping under one mutex and packs a self-contained event into the ring.
+ * Because each event bakes its own distinct_id and profile decision at capture
+ * time, the sender needs no shared identity state, and the ordering "events
+ * captured before ph_identify keep the anonymous id" falls out for free.
+ *
+ * The $exception path lives in ph_exception.c and feature flags in ph_flags.c;
+ * both call ph__submit_event() here.
  */
 #include "ph_internal.h"
 #include "ph_crash.h"
 #include "ph_http.h"
-#include "ph_json.h"
-#include "ph_str.h"
 #include "ph_time.h"
 #include "ph_tls.h"
 #include "ph_util.h"
@@ -27,17 +29,6 @@ ph_ctx g_ph;
 const char *ph_version(void) { return PH_VERSION_STRING; }
 
 /* --- small helpers ---------------------------------------------------- */
-
-/* copy-capped / typed-value copy / remove-key / find-last-string live in
- * ph_util.c, shared with the wasm backend. The two denylist helpers bind this
- * backend's global denylist to that shared implementation. */
-static int denylist_has(const char *key) {
-    return ph_denylist_has(g_ph.denylist, g_ph.denylist_count, key);
-}
-
-static void apply_denylist(ph_props *p) {
-    ph_apply_denylist(p, g_ph.denylist, g_ph.denylist_count);
-}
 
 static int def_int(int v, int fallback) { return v > 0 ? v : fallback; }
 
@@ -235,7 +226,7 @@ static int derive_no_profile(int profile_mode) {
 /* profile_mode: -1 derive from policy, 0 force profile, 1 force anonymous.
  * `extra`/`extra_len`: optional pre-packed entries (e.g. the $exception_list
  * rawjson) appended after props/super/groups; pass NULL/0 when unused. */
-static void submit_event(int kind, unsigned char base_flags, const char *name,
+void ph__submit_event(int kind, unsigned char base_flags, const char *name,
                          const char *did_override, const ph_props *props,
                          int profile_mode, int stamp_super_groups,
                          const char *extra, size_t extra_len) {
@@ -313,7 +304,7 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
 
 void ph_capture(const char *event, const ph_props *props) {
     if (!g_ph.enabled || !event || !event[0]) return;
-    submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
+    ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
@@ -323,7 +314,7 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     g_ph.identified = 1;
     ph_mutex_unlock(&g_ph.lock);
     /* $identify builds a profile regardless of policy (profile_mode = 0). */
-    submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
+    ph__submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
 
     /* Identity changed -> re-evaluate flags. Done on the sender thread so
      * ph_identify never blocks on the network. */
@@ -338,7 +329,7 @@ void ph_alias(const char *new_id, const char *old_id) {
     if (!g_ph.enabled || !new_id || !new_id[0] || !old_id || !old_id[0]) return;
     ph_props_init(&p);
     ph_props_set_str(&p, "alias", new_id);
-    submit_event(PH_EV_ALIAS, 0, "$create_alias", old_id, &p, 0, 0, NULL, 0);
+    ph__submit_event(PH_EV_ALIAS, 0, "$create_alias", old_id, &p, 0, 0, NULL, 0);
 }
 
 void ph_reset(void) {
@@ -385,7 +376,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
         }
     }
     snprintf(did, sizeof(did), "$%s_%s", type, key);
-    submit_event(PH_EV_GROUP, 0, "$groupidentify", did, &p, 0, 0, NULL, 0);
+    ph__submit_event(PH_EV_GROUP, 0, "$groupidentify", did, &p, 0, 0, NULL, 0);
 }
 
 void ph_register(const ph_props *super_props) {
@@ -423,140 +414,6 @@ void ph_unregister(const char *key) {
     ph_mutex_unlock(&g_ph.lock);
 }
 
-/* Emit s as a JSON string literal, truncated to PH_EXCEPTION_FIELD_CAP bytes. */
-static void json_cstr_exception_cap(ph_strbuf *out, const char *s) {
-    size_t n = 0;
-    if (!s) s = "";
-    while (s[n] && n + 1 < PH_EXCEPTION_FIELD_CAP) n++;
-    ph_json_str(out, s, n);
-}
-
-/* Build the $exception_list JSON array: one exception object with type,
- * value, mechanism, and a bounded raw stacktrace. Built here (off the sim hot
- * path - exceptions are rare) so the caller's transient frame pointers are
- * copied out before they go invalid. */
-static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
-                                 const char *type, const char *message,
-                                 int omit_function, int omit_filename,
-                                 int omit_module, int omit_frames) {
-    int i;
-    int frame_count = ex->frame_count;
-    if (frame_count < 0) frame_count = 0;
-    if (frame_count > PH_MAX_EXCEPTION_FRAMES) frame_count = PH_MAX_EXCEPTION_FRAMES;
-
-    ph_strbuf_append_cstr(out, "[{\"type\":");
-    json_cstr_exception_cap(out, type ? type : "Error");
-    ph_strbuf_append_cstr(out, ",\"value\":");
-    json_cstr_exception_cap(out, message ? message : "");
-    ph_strbuf_append_cstr(out, ",\"mechanism\":{\"handled\":");
-    ph_json_bool(out, ex->handled);
-    ph_strbuf_append_cstr(out, ",\"synthetic\":");
-    ph_json_bool(out, ex->synthetic);
-    ph_strbuf_append_cstr(out, "},\"stacktrace\":{\"type\":\"raw\",\"frames\":[");
-    for (i = 0; !omit_frames && ex->frames && i < frame_count; i++) {
-        const ph_stackframe *f = &ex->frames[i];
-        /* Stop before a frame would push the payload past the event blob, so a
-         * deep stack degrades to as-many-as-fit rather than the packer dropping
-         * the whole $exception_list. Checked before the separator so we never
-         * leave a trailing comma. */
-        if (out->len > (size_t)PH_EVENT_DATA_CAP - PH_EXCEPTION_BLOB_RESERVE) break;
-        if (i > 0) ph_strbuf_append_char(out, ',');
-        ph_strbuf_append_cstr(out, "{\"platform\":\"custom\",\"lang\":\"cpp\",\"in_app\":");
-        ph_json_bool(out, f->in_app);
-        if (!omit_function && f->function) {
-            ph_strbuf_append_cstr(out, ",\"function\":");
-            json_cstr_exception_cap(out, f->function);
-        }
-        if (!omit_filename && f->filename) {
-            ph_strbuf_append_cstr(out, ",\"filename\":");
-            json_cstr_exception_cap(out, f->filename);
-        }
-        if (!omit_module && f->module) {
-            ph_strbuf_append_cstr(out, ",\"module\":");
-            json_cstr_exception_cap(out, f->module);
-        }
-        if (f->lineno > 0) { ph_strbuf_append_cstr(out, ",\"lineno\":"); ph_json_int(out, f->lineno); }
-        ph_strbuf_append_cstr(out, ",\"resolved\":true}");
-    }
-    ph_strbuf_append_cstr(out, "]}}]");
-}
-
-/* Build the non-frame $exception props, then extract the (possibly scrubbed)
- * type/message for the caller. Applies the denylist and runs before_send:
- * returns 0 if before_send vetoed the event (caller drops it), else 1. The
- * omit_* out-flags report which frame fields the denylist suppresses. */
-static int prepare_exception_props(const ph_exception *ex, ph_props *p,
-                                   char *type, size_t type_cap,
-                                   char *message, size_t message_cap,
-                                   int *omit_function, int *omit_filename,
-                                   int *omit_module, int *omit_frames) {
-    const char *v;
-    int i;
-
-    ph_props_init(p);
-    ph_props_set_str(p, "$exception_level", ex->handled ? "warning" : "error");
-    ph_props_set_str(p, "$exception_type", ex->type ? ex->type : "Error");
-    ph_props_set_str(p, "$exception_message", ex->message ? ex->message : "");
-    if (ex->extra) {
-        for (i = 0; i < ex->extra->count; i++) ph_copy_prop_value(p, &ex->extra->items[i]);
-    }
-
-    apply_denylist(p);
-    if (denylist_has("type")) ph_props_remove_key(p, "$exception_type");
-    if (denylist_has("message")) ph_props_remove_key(p, "$exception_message");
-
-    if (g_ph.before_send && !g_ph.before_send("$exception", p, g_ph.user_data))
-        return 0;
-
-    v = ph_props_find_last_str(p, "$exception_type");
-    ph_copy_capped(type, type_cap, v ? v : "Error");
-    v = ph_props_find_last_str(p, "$exception_message");
-    ph_copy_capped(message, message_cap, v ? v : "");
-
-    ph_props_remove_key(p, "$exception_type");
-    ph_props_remove_key(p, "$exception_message");
-
-    *omit_function = denylist_has("function") || denylist_has("$exception_frame_function");
-    *omit_filename = denylist_has("filename") || denylist_has("$exception_frame_filename");
-    *omit_module = denylist_has("module") || denylist_has("$exception_frame_module");
-    *omit_frames = denylist_has("frames") || denylist_has("stacktrace") ||
-                   denylist_has("$exception_frames");
-    return 1;
-}
-
-void ph_capture_exception(const ph_exception *ex) {
-    ph_props p;
-    ph_strbuf list;
-    char extra[PH_EVENT_DATA_CAP];
-    size_t extra_len = 0;
-    char type[PH_EXCEPTION_FIELD_CAP];
-    char message[PH_EXCEPTION_FIELD_CAP];
-    int omit_function, omit_filename, omit_module, omit_frames;
-
-    if (!g_ph.enabled || !ex) return;
-
-    /* The structured exception payload has to be copied before caller-owned
-     * pointers go stale. Run the privacy hook here for exceptions so type/message
-     * can be redacted before the raw $exception_list is built. */
-    if (!prepare_exception_props(ex, &p, type, sizeof(type), message, sizeof(message),
-                                 &omit_function, &omit_filename, &omit_module,
-                                 &omit_frames))
-        return;
-
-    /* The nested $exception_list rides as a rawjson entry (the flat packer can't
-     * express nested arrays/objects); the serializer emits it verbatim. */
-    ph_strbuf_init(&list);
-    build_exception_list(&list, ex, type, message, omit_function, omit_filename,
-                         omit_module, omit_frames);
-    if (list.data && !list.oom)
-        extra_len = ph_pack_str_entry(extra, sizeof(extra), (unsigned char)PH_PK_RAWJSON,
-                                      "$exception_list", list.data);
-
-    submit_event(PH_EV_EXCEPTION, PH_EVF_SCRUBBED, "$exception", NULL, &p, -1, 1,
-                 extra, extra_len);
-    ph_strbuf_free(&list);
-}
-
 uint64_t ph_dropped_events(void) {
     uint64_t rate_dropped;
     uint64_t ring_dropped = 0;
@@ -566,42 +423,4 @@ uint64_t ph_dropped_events(void) {
     rate_dropped = g_ph.rl_dropped;
     ph_mutex_unlock(&g_ph.lock);
     return ring_dropped + rate_dropped;
-}
-
-/* --- feature flags ---------------------------------------------------- */
-
-/* Deduped exposure event emitted when a flag is read (ph_flags.c calls this). */
-void ph__emit_ff_called(const char *key, const char *value) {
-    ph_props p;
-    if (!g_ph.enabled) return;
-    ph_props_init(&p);
-    ph_props_set_str(&p, "$feature_flag", key);
-    ph_props_set_str(&p, "$feature_flag_response", value);
-    submit_event(PH_EV_CAPTURE, 0, "$feature_flag_called", NULL, &p, -1, 1, NULL, 0);
-}
-
-int ph_is_feature_enabled(const char *key, int fallback) {
-    if (!g_ph.enabled) return fallback;
-    return ph__flags_is_enabled(key, fallback);
-}
-
-ph_result ph_get_feature_flag(const char *key, char *out, int cap) {
-    if (!g_ph.enabled) {
-        if (out && cap > 0) out[0] = '\0';
-        return PH_ERR;
-    }
-    return ph__flags_get(key, out, cap);
-}
-
-ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
-    if (!g_ph.enabled) {
-        if (out && cap > 0) out[0] = '\0';
-        return PH_ERR;
-    }
-    return ph__flags_get_payload(key, out, cap);
-}
-
-void ph_reload_feature_flags(void) {
-    if (!g_ph.enabled) return;
-    ph__flags_fetch();
 }
