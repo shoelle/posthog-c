@@ -111,7 +111,7 @@ standing up a live server.
 ## Review priorities
 
 - hot-path-safety regressions in `ph_capture` (hidden alloc/clock/RNG)
-- wire-shape drift from the ingestion API (§3 above)
+- wire-shape drift from the ingestion API (invariant 3 above)
 - native/wasm parity risk
 - thread-safety of the queue + flush handshake (lock ordering: never take the
   queue lock then the flush lock)

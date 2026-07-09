@@ -70,7 +70,7 @@ static int post_and_note(const char *body, size_t len) {
     return status;
 }
 
-/* --- Offline spill file (§6) ------------------------------------------
+/* --- Offline spill file ----------------------------------------------
  *
  * When a send fails and offline_path is set, the serialized batch is appended
  * as one line to a single NDJSON file. On the next drain the sender replays

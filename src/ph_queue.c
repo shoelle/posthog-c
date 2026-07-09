@@ -29,7 +29,7 @@ ph_event *ph_queue_begin_push(ph_queue *q) {
     int idx;
     ph_mutex_lock(&q->lock);
     if (q->size == q->cap) {
-        /* Drop the oldest to make room (§6). */
+        /* Drop the oldest to make room. */
         q->head = (q->head + 1) % q->cap;
         q->size--;
         q->dropped++;

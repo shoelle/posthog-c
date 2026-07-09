@@ -35,7 +35,8 @@ fills that gap on top of PostHog's raw ingestion API.
   caller thread. All I/O happens on a background thread. That keeps it safe to
   call from a game engine's simulation loop.
 - **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a
-  property denylist, and a master kill-switch (see [DESIGN.md](DESIGN.md) §5).
+  property denylist, and a master kill-switch (see "Privacy & reliability" in
+  [DESIGN.md](DESIGN.md)).
 
 ## Quick start (C)
 

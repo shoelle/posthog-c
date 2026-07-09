@@ -4,7 +4,7 @@
  * The ring is allocated once at init; ph_capture() never allocates. When the
  * ring is full a push evicts the oldest event and bumps a dropped counter, so
  * a producer that outruns the network degrades gracefully instead of blocking
- * the caller or growing without bound (§6).
+ * the caller or growing without bound.
  *
  * The event record lives here because it is the ring's element type. It is a
  * plain POD with a single fixed data[] blob (name + optional distinct_id

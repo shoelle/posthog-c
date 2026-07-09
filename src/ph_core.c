@@ -215,7 +215,7 @@ ph_result ph_init(const ph_config *cfg) {
         }
     }
 
-    /* Preload flags so the first frame has answers (§9). One blocking round
+    /* Preload flags so the first frame has answers. One blocking round
      * trip; opt out with preload_flags = 0. */
     if (cfg->preload_flags) ph__flags_fetch();
     return PH_OK;
@@ -248,7 +248,7 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
     if (!g_ph.enabled || !name) return;
 
     /* Hot-path reads: one cheap monotonic tick + one atomic sequence bump.
-     * No wall clock, no RNG, no malloc (§1). */
+     * No wall clock, no RNG, no malloc. */
     mono = ph_now_mono_ns();
     seq = (uint64_t)atomic_fetch_add(&g_ph.seq, (uint_least64_t)1);
 
@@ -452,7 +452,7 @@ static void json_cstr_exception_cap(ph_strbuf *out, const char *s) {
     ph_json_str(out, s, n);
 }
 
-/* Build the $exception_list JSON array (§8): one exception object with type,
+/* Build the $exception_list JSON array: one exception object with type,
  * value, mechanism, and a bounded raw stacktrace. Built here (off the sim hot
  * path — exceptions are rare) so the caller's transient frame pointers are
  * copied out before they go invalid. */
@@ -585,7 +585,7 @@ uint64_t ph_dropped_events(void) {
     return ring_dropped + rate_dropped;
 }
 
-/* --- feature flags (§9) ----------------------------------------------- */
+/* --- feature flags ---------------------------------------------------- */
 
 /* Deduped exposure event emitted when a flag is read (ph_flags.c calls this). */
 void ph__emit_ff_called(const char *key, const char *value) {

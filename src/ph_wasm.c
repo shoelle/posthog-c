@@ -1,6 +1,6 @@
 /*
  * ph_wasm.c — the WebAssembly backend: a thin shim over the browser's already
- * loaded posthog-js (§3, §7). Selected at compile time by __EMSCRIPTEN__.
+ * loaded posthog-js. Selected at compile time by __EMSCRIPTEN__.
  *
  * There is no network stack here: posthog-js owns batching, retry, offline, and
  * the reverse-proxy host. The shim's jobs are (a) verify at init that the host

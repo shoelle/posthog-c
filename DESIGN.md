@@ -169,7 +169,7 @@ customer's own integration reference:
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP → real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |
-| **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) → a persisted `$exception` replayed next launch; module+offset frames (§8) |
+| **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) → a persisted `$exception` replayed next launch; module+offset frames |
 | **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |
 | later | out-of-process `minidump_crash` (Crashpad + the separate `posthog-crash` service) |
 

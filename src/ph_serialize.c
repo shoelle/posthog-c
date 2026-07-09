@@ -4,7 +4,7 @@
  * This is the one place event JSON is produced, and it is deliberately pure:
  * no threads, no clocks beyond the per-event reconstruction, no network. That
  * makes it directly unit-testable and is what native/wasm parity is asserted
- * against (§7) — both backends must produce the same event shape.
+ * against — both backends must produce the same event shape.
  *
  * Envelope (confirmed against the capture API and the customer's reference):
  *   {"api_key":"…","historical_migration":false,"batch":[ <event>, … ]}
@@ -19,7 +19,7 @@
 
 #include <string.h>
 
-/* --- Compile-time platform tags (auto-properties, §4) ----------------- */
+/* --- Compile-time platform tags (auto-properties) ----------------- */
 
 static const char *platform_os(void) {
 #if defined(__EMSCRIPTEN__)
@@ -227,7 +227,7 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
     ph_strbuf_append_cstr(out, "\"distinct_id\":");
     ph_json_str(out, eff_did, eff_did_len);
 
-    /* Auto-properties stamped on every event (§4). */
+    /* Auto-properties stamped on every event. */
     emit_kv_cstr(out, &first, "$lib", "posthog-c");
     emit_kv_cstr(out, &first, "$lib_version", PH_VERSION_STRING);
     emit_kv_cstr(out, &first, "$lib_backend", backend_tag());

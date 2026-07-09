@@ -46,7 +46,7 @@
 #define PH_EXCEPTION_FIELD_CAP 96
 #endif
 
-/* Feature-flag cache (remote eval, §9). */
+/* Feature-flag cache (remote eval). */
 #ifndef PH_MAX_FLAGS
 #define PH_MAX_FLAGS 64
 #endif
@@ -201,7 +201,7 @@ typedef struct ph_ctx {
                           * the in-memory queue is already empty */
 } ph_ctx;
 
-/* The one process-global instance (§2 global singleton). */
+/* The one process-global instance (global singleton). */
 extern ph_ctx g_ph;
 
 /* --- Internal helpers shared across .c files -------------------------- */

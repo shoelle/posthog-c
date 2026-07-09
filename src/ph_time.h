@@ -5,7 +5,7 @@
  * monotonic counter (ph_now_mono_ns). Everything expensive or non-deterministic
  * — wall-clock formatting, UUID generation — runs on the sender thread, which
  * reconstructs each event's real time from its monotonic tick against a single
- * epoch captured at init (§4).
+ * epoch captured at init.
  */
 #ifndef PH_TIME_H
 #define PH_TIME_H

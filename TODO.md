@@ -12,7 +12,7 @@ Priorities: 🔴 high · 🟡 medium · 🟢 low.
 v0.6 shipped the in-process `signal_crash` handler — POSIX signals
 (`SIGSEGV`/`SIGABRT`/`SIGBUS`/…) and the Windows unhandled-exception filter →
 a persisted `$exception` replayed on the next launch, with module+offset frames.
-See [DESIGN.md](DESIGN.md) §8. What's left on this path:
+See "Native crash capture" in [DESIGN.md](DESIGN.md). What's left on this path:
 
 - **Out-of-process `minidump_crash` 🟡.** In-process capture can't survive heap
   corruption and takes the loader lock during the per-frame module lookup (a
@@ -44,7 +44,8 @@ instead of silently invisible. Low risk; purely additive telemetry.
 
 v0.2 shipped WinHTTP on Windows; Linux (vendored BearSSL) and macOS (Secure
 Transport / NSURLSession) are stubbed — `ph_tls_send`/`ph_tls_fetch` return `-1`
-off-Windows. Can't be verified from a Windows dev box. See DESIGN.md §7.1.
+off-Windows. Can't be verified from a Windows dev box. See the TLS-library
+tradeoff in DESIGN.md.
 
 ## Deliberately out of scope (don't re-litigate)
 
@@ -56,7 +57,7 @@ off-Windows. Can't be verified from a Windows dev box. See DESIGN.md §7.1.
 - **Discarding 5xx**: we retry 5xx with backoff — the better default for a
   transient server blip. Keep it.
 - **Session replay**: no DOM/canvas from C, and a privacy liability. Excluded
-  (DESIGN.md §7.6).
+  (see the session-replay tradeoff in DESIGN.md).
 
 ## Keep strong (don't regress)
 
