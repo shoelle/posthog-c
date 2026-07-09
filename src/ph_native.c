@@ -12,6 +12,7 @@
 #include "ph_internal.h"
 #include "ph_str.h"
 #include "ph_time.h"
+#include "ph_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -255,18 +256,7 @@ static void offline_replay(void) {
     ph_strbuf_free(&keep);
 }
 
-/* Remove every entry with `key` from a ph_props (in place). */
-static void remove_key(ph_props *p, const char *key) {
-    int i, k;
-    for (i = 0; i < p->count;) {
-        if (strcmp(p->items[i].key, key) == 0) {
-            for (k = i; k + 1 < p->count; k++) p->items[k] = p->items[k + 1];
-            p->count--;
-        } else {
-            i++;
-        }
-    }
-}
+/* remove-key lives in ph_util.c (ph_props_remove_key), shared across backends. */
 
 /* Scrub one event: strip denylisted keys, and (when run_before_send is set) run
  * before_send. Returns 1 to keep (blob rewritten in place) or 0 to drop.
@@ -306,7 +296,7 @@ static int scrub_one(ph_event *e, int run_before_send) {
         }
     }
 
-    for (i = 0; i < g_ph.denylist_count; i++) remove_key(&props, g_ph.denylist[i]);
+    for (i = 0; i < g_ph.denylist_count; i++) ph_props_remove_key(&props, g_ph.denylist[i]);
     if (run_before_send && g_ph.before_send &&
         !g_ph.before_send(name, &props, g_ph.user_data))
         return 0;

@@ -11,18 +11,13 @@
 #include "ph_json.h"
 #include "ph_jsonval.h"
 #include "ph_str.h"
+#include "ph_util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static void copy_capped(char *dst, size_t cap, const char *src) {
-    size_t i = 0;
-    if (cap == 0) return;
-    if (src)
-        for (; src[i] && i + 1 < cap; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
+/* copy_capped lives in ph_util.c (ph_copy_capped), shared across backends. */
 
 /* Caller holds g_ph.lock. */
 static ph_flag *find_locked(const char *key) {
@@ -54,15 +49,15 @@ void ph__flags_ingest(const char *json, size_t len) {
         ph_flag *slot = &g_ph.flags[g_ph.flag_count];
         if (!key) continue;
         memset(slot, 0, sizeof(*slot));
-        copy_capped(slot->key, PH_KEY_CAP, key);
+        ph_copy_capped(slot->key, PH_KEY_CAP, key);
         slot->enabled = ph_jv_bool(ph_jv_get(f, "enabled"));
         if (ph_jv_type_of(variant) == PH_JV_STR) {
             slot->has_variant = 1;
-            copy_capped(slot->variant, PH_FLAG_VARIANT_CAP, ph_jv_str(variant));
+            ph_copy_capped(slot->variant, PH_FLAG_VARIANT_CAP, ph_jv_str(variant));
         }
         if (ph_jv_type_of(payload) == PH_JV_STR) {
             slot->has_payload = 1;
-            copy_capped(slot->payload, PH_FLAG_PAYLOAD_CAP, ph_jv_str(payload));
+            ph_copy_capped(slot->payload, PH_FLAG_PAYLOAD_CAP, ph_jv_str(payload));
         }
         g_ph.flag_count++;
     }
@@ -153,7 +148,7 @@ static int resolve(const char *key, char *value, size_t vcap, int *enabled,
     if (f) {
         found = 1;
         if (enabled) *enabled = f->enabled;
-        copy_capped(value, vcap, f->has_variant ? f->variant : (f->enabled ? "true" : "false"));
+        ph_copy_capped(value, vcap, f->has_variant ? f->variant : (f->enabled ? "true" : "false"));
         if (g_ph.send_feature_flag_events && !f->called_sent) {
             f->called_sent = 1;
             *emit = 1;
@@ -179,7 +174,7 @@ ph_result ph__flags_get(const char *key, char *out, int cap) {
     if (out && cap > 0) out[0] = '\0';
     if (!key) return PH_ERR;
     found = resolve(key, value, sizeof(value), NULL, &emit);
-    if (found && out && cap > 0) copy_capped(out, (size_t)cap, value);
+    if (found && out && cap > 0) ph_copy_capped(out, (size_t)cap, value);
     if (emit) ph__emit_ff_called(key, value);
     return found ? PH_OK : PH_ERR;
 }
@@ -193,7 +188,7 @@ ph_result ph__flags_get_payload(const char *key, char *out, int cap) {
     f = find_locked(key);
     if (f && f->has_payload) {
         found = 1;
-        if (out && cap > 0) copy_capped(out, (size_t)cap, f->payload);
+        if (out && cap > 0) ph_copy_capped(out, (size_t)cap, f->payload);
     }
     ph_mutex_unlock(&g_ph.lock);
     return found ? PH_OK : PH_ERR;

@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const c_sources = [_][]const u8{
     "src/ph_str.c",
     "src/ph_json.c",
+    "src/ph_util.c",
     "src/ph_thread.c",
     "src/ph_time.c",
     "src/ph_queue.c",
@@ -72,6 +73,7 @@ const wasm_shared = [_][]const u8{
     "src/ph_props.c",
     "src/ph_json.c",
     "src/ph_str.c",
+    "src/ph_util.c",
     "src/ph_serialize.c",
     "src/ph_time.c",
 };

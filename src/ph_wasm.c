@@ -19,6 +19,7 @@
 
 #include "posthog.h"
 #include "ph_str.h"
+#include "ph_util.h"
 
 #include <emscripten.h>
 #include <stdlib.h>
@@ -38,64 +39,23 @@ static ph_props g_super;
 
 const char *ph_version(void) { return PH_VERSION_STRING; }
 
-static void copy_capped(char *dst, size_t cap, const char *src) {
-    size_t i = 0;
-    if (cap == 0) return;
-    if (src)
-        for (; src[i] && i + 1 < cap; i++) dst[i] = src[i];
-    dst[i] = '\0';
-}
-
-static void copy_prop_value(ph_props *dst, const ph_prop *src) {
-    switch (src->type) {
-        case PH_T_STR: ph_props_set_str(dst, src->key, src->val.str); break;
-        case PH_T_DOUBLE: ph_props_set_double(dst, src->key, src->val.dbl); break;
-        case PH_T_INT: ph_props_set_int(dst, src->key, src->val.i64); break;
-        case PH_T_BOOL: ph_props_set_bool(dst, src->key, src->val.boolean); break;
-        default: break;
-    }
-}
-
-static void remove_key(ph_props *p, const char *key) {
-    int i, k;
-    for (i = 0; p && i < p->count;) {
-        if (strcmp(p->items[i].key, key) == 0) {
-            for (k = i; k + 1 < p->count; k++) p->items[k] = p->items[k + 1];
-            p->count--;
-        } else {
-            i++;
-        }
-    }
-}
-
-static const char *find_last_str(const ph_props *p, const char *key) {
-    int i;
-    if (!p || !key) return NULL;
-    for (i = p->count - 1; i >= 0; i--) {
-        const ph_prop *it = &p->items[i];
-        if (it->type == PH_T_STR && strcmp(it->key, key) == 0) return it->val.str;
-    }
-    return NULL;
-}
-
+/* copy-capped / typed-value copy / remove-key / find-last-string live in
+ * ph_util.c, shared with the native backend. The two denylist helpers bind this
+ * backend's global denylist to that shared implementation. */
 static void apply_denylist(ph_props *p) {
-    int i;
-    for (i = 0; i < g_denylist_count; i++) remove_key(p, g_denylist[i]);
+    ph_apply_denylist(p, g_denylist, g_denylist_count);
 }
 
 static int denylist_has(const char *key) {
-    int i;
-    for (i = 0; key && i < g_denylist_count; i++)
-        if (strcmp(g_denylist[i], key) == 0) return 1;
-    return 0;
+    return ph_denylist_has(g_denylist, g_denylist_count, key);
 }
 
 static int scrub_props(const char *event, const ph_props *in, ph_props *out) {
     int i;
     ph_props_init(out);
-    for (i = 0; i < g_super.count; i++) copy_prop_value(out, &g_super.items[i]);
+    for (i = 0; i < g_super.count; i++) ph_copy_prop_value(out, &g_super.items[i]);
     if (in) {
-        for (i = 0; i < in->count; i++) copy_prop_value(out, &in->items[i]);
+        for (i = 0; i < in->count; i++) ph_copy_prop_value(out, &in->items[i]);
     }
     apply_denylist(out);
     if (g_before_send && !g_before_send(event, out, g_user_data)) return 0;
@@ -154,7 +114,7 @@ ph_result ph_init(const ph_config *cfg) {
         if (n > PH_MAX_DENYLIST) n = PH_MAX_DENYLIST;
         for (i = 0; i < n; i++) {
             if (cfg->property_denylist[i] && cfg->property_denylist[i][0])
-                copy_capped(g_denylist[g_denylist_count++], PH_KEY_CAP,
+                ph_copy_capped(g_denylist[g_denylist_count++], PH_KEY_CAP,
                             cfg->property_denylist[i]);
         }
     }
@@ -249,7 +209,7 @@ void ph_register(const ph_props *super_props) {
 
 void ph_unregister(const char *key) {
     if (!g_enabled || !g_identity_ok || !key) return;
-    remove_key(&g_super, key);
+    ph_props_remove_key(&g_super, key);
 }
 
 void ph_capture_exception(const ph_exception *ex) {
@@ -262,24 +222,24 @@ void ph_capture_exception(const ph_exception *ex) {
     ph_props_init(&clean);
     {
         int i;
-        for (i = 0; i < g_super.count; i++) copy_prop_value(&clean, &g_super.items[i]);
+        for (i = 0; i < g_super.count; i++) ph_copy_prop_value(&clean, &g_super.items[i]);
     }
     ph_props_set_str(&clean, "$exception_type", ex->type ? ex->type : "Error");
     ph_props_set_str(&clean, "$exception_message", ex->message ? ex->message : "");
     if (ex->extra) {
         int i;
-        for (i = 0; i < ex->extra->count; i++) copy_prop_value(&clean, &ex->extra->items[i]);
+        for (i = 0; i < ex->extra->count; i++) ph_copy_prop_value(&clean, &ex->extra->items[i]);
     }
     apply_denylist(&clean);
-    if (denylist_has("type")) remove_key(&clean, "$exception_type");
-    if (denylist_has("message")) remove_key(&clean, "$exception_message");
+    if (denylist_has("type")) ph_props_remove_key(&clean, "$exception_type");
+    if (denylist_has("message")) ph_props_remove_key(&clean, "$exception_message");
     if (g_before_send && !g_before_send("$exception", &clean, g_user_data)) return;
-    v = find_last_str(&clean, "$exception_type");
-    copy_capped(type, sizeof(type), v ? v : "Error");
-    v = find_last_str(&clean, "$exception_message");
-    copy_capped(message, sizeof(message), v ? v : "");
-    remove_key(&clean, "$exception_type");
-    remove_key(&clean, "$exception_message");
+    v = ph_props_find_last_str(&clean, "$exception_type");
+    ph_copy_capped(type, sizeof(type), v ? v : "Error");
+    v = ph_props_find_last_str(&clean, "$exception_message");
+    ph_copy_capped(message, sizeof(message), v ? v : "");
+    ph_props_remove_key(&clean, "$exception_type");
+    ph_props_remove_key(&clean, "$exception_message");
     json = props_to_json(&clean);
     EM_ASM({
         if (typeof window === 'undefined' || !window.posthog) return;
