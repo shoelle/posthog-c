@@ -1,12 +1,12 @@
 /*
- * quickstart.c — the smallest useful posthog-c program (C ABI).
+ * quickstart.c - the smallest useful posthog-c program (C ABI).
  *
  * Build + run:  zig build run-example
  *
  * api_host can be a local dev proxy over http:// (any platform) or an https://
- * PostHog host — HTTPS works on Windows now (WinHTTP); Linux/macOS TLS is next
+ * PostHog host - HTTPS works on Windows now (WinHTTP); Linux/macOS TLS is next
  * on the roadmap. With nothing listening on the dev proxy below, the sender
- * logs a failed POST and drops the batch — which is what on_log prints.
+ * logs a failed POST and drops the batch - which is what on_log prints.
  */
 #include "posthog.h"
 

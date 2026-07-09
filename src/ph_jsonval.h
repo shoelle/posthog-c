@@ -1,5 +1,5 @@
 /*
- * ph_jsonval.h — a minimal read-only JSON parser (DOM).
+ * ph_jsonval.h - a minimal read-only JSON parser (DOM).
  *
  * The rest of the SDK only ever *writes* JSON, but feature-flag evaluation has
  * to *read* the /flags/ response, so this adds just enough parsing: a small

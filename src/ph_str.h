@@ -1,5 +1,5 @@
 /*
- * ph_str.h — a minimal growable byte buffer.
+ * ph_str.h - a minimal growable byte buffer.
  *
  * Used off the hot path (on the sender thread) to assemble serialized batch
  * bodies. On allocation failure it latches `oom` and every further append is a

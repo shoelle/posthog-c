@@ -1,5 +1,5 @@
 /*
- * fuzz.h — the tiny contract every posthog-c fuzz target implements.
+ * fuzz.h - the tiny contract every posthog-c fuzz target implements.
  *
  * Targets use the standard libFuzzer entry point so a real coverage-guided
  * libFuzzer/AFL build (Linux CI) can drive them unchanged. On toolchains

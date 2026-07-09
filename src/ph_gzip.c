@@ -5,7 +5,7 @@
 
 #include <stdlib.h>
 
-/* Standard CRC-32 (IEEE 802.3, poly 0xEDB88320) — the checksum gzip trailers
+/* Standard CRC-32 (IEEE 802.3, poly 0xEDB88320) - the checksum gzip trailers
  * carry. Table built once; only ever called from the single sender thread. */
 static unsigned long crc32_ieee(const unsigned char *data, size_t len) {
     static unsigned long table[256];
@@ -44,7 +44,7 @@ int ph_gzip(const char *in, size_t in_len, char **out, size_t *out_len) {
 
     buf = (unsigned char *)malloc(10 + (size_t)bound + 8);
     if (!buf) return -1;
-    /* ~260 KB of hash/window tables — heap, never the stack. */
+    /* ~260 KB of hash/window tables - heap, never the stack. */
     s = (struct sdefl *)calloc(1, sizeof(struct sdefl));
     if (!s) {
         free(buf);

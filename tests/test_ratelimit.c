@@ -232,8 +232,8 @@ static void test_quota_replay_drops_delivered_keeps_rest(void) {
     content = read_file(path, &clen);
     CHECK_MSG(content != NULL && clen > 0, "expected the untried line to remain");
     if (content) {
-        CHECK_CONTAINS(content, "replay_second");    /* untried — kept */
-        CHECK_NOT_CONTAINS(content, "replay_first");  /* accepted — dropped */
+        CHECK_CONTAINS(content, "replay_second");    /* untried - kept */
+        CHECK_NOT_CONTAINS(content, "replay_first");  /* accepted - dropped */
         free(content);
     }
 

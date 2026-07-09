@@ -1,5 +1,5 @@
 /*
- * ph_flags.c — remote feature-flag evaluation + cache.
+ * ph_flags.c - remote feature-flag evaluation + cache.
  *
  * A client SDK can't hold the personal key server SDKs use for local eval, so
  * flags are evaluated remotely: POST /flags?v=2 with the distinct_id, cache the

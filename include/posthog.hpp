@@ -1,10 +1,10 @@
 /*
- * posthog.hpp — a thin, header-only C++ convenience layer over posthog.h.
+ * posthog.hpp - a thin, header-only C++ convenience layer over posthog.h.
  *
  * The C ABI stays the source of truth (stable, bindable from any language);
  * this just adds ergonomics for C++ call sites: a fluent Props builder, RAII
  * init/shutdown, and overloads that accept std::string. It adds no state and
- * no allocation of its own — every call forwards straight to the C API.
+ * no allocation of its own - every call forwards straight to the C API.
  *
  * C++11 or later. No exceptions, no RTTI, so it drops cleanly into engines
  * built with -fno-exceptions/-fno-rtti.

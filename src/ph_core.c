@@ -1,5 +1,5 @@
 /*
- * ph_core.c — the public API surface and the shared enqueue path.
+ * ph_core.c - the public API surface and the shared enqueue path.
  *
  * Every public call funnels through submit_event(), which snapshots identity /
  * super-properties / group scoping under one mutex and packs a self-contained
@@ -202,8 +202,8 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.enabled = 1;
     ph__sender_start();
 
-    /* signal_crash (v0.6): first replay any crash a previous run persisted — it
-     * ships as a $exception through the normal path — then arm the handler for
+    /* signal_crash (v0.6): first replay any crash a previous run persisted - it
+     * ships as a $exception through the normal path - then arm the handler for
      * this run. Needs offline_path to survive the restart. */
     if (cfg->crash_handler) {
         if (g_ph.offline_path[0]) {
@@ -259,7 +259,7 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
         size_t cap = PH_EVENT_DATA_CAP;
 
         /* Rate limit product + exception events (not rare control events).
-         * Refills from the monotonic tick we already read — no wall clock. */
+         * Refills from the monotonic tick we already read - no wall clock. */
         if (g_ph.rl_rate > 0.0 &&
             (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION)) {
             uint64_t d = mono >= g_ph.rl_last_mono ? mono - g_ph.rl_last_mono : 0;
@@ -455,7 +455,7 @@ static void json_cstr_exception_cap(ph_strbuf *out, const char *s) {
 
 /* Build the $exception_list JSON array: one exception object with type,
  * value, mechanism, and a bounded raw stacktrace. Built here (off the sim hot
- * path — exceptions are rare) so the caller's transient frame pointers are
+ * path - exceptions are rare) so the caller's transient frame pointers are
  * copied out before they go invalid. */
 static void build_exception_list(ph_strbuf *out, const ph_exception *ex,
                                  const char *type, const char *message,

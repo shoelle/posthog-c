@@ -1,5 +1,5 @@
 /*
- * posthog.h — PostHog C SDK, public C ABI.
+ * posthog.h - PostHog C SDK, public C ABI.
  *
  * A small, embeddable PostHog client for C/C++ applications. One public ABI,
  * two compile-time transports: `native` (owns HTTP + a background sender
@@ -7,7 +7,7 @@
  * browser's already-loaded `window.posthog`). Callers never see the split.
  *
  * Everything rides PostHog's documented raw ingestion API (`/batch/`,
- * `/i/v0/e/`, `/flags/`) — no dependency on another PostHog SDK.
+ * `/i/v0/e/`, `/flags/`) - no dependency on another PostHog SDK.
  *
  * This is a C header: any C or C++ program can include it, and any language
  * can bind the resulting ABI. A header-only C++ convenience wrapper lives in
@@ -42,7 +42,7 @@ const char *ph_version(void);
  *
  * These bound the SDK's fixed storage so the capture hot path never calls
  * malloc. They are compile-time constants: when the SDK is consumed as
- * source (the intended path — a submodule wrapped by the host's build), the
+ * source (the intended path - a submodule wrapped by the host's build), the
  * lib and the caller compile against the same values, so there is no ABI
  * hazard. Override any of them with -D before including this header if your
  * event shapes need more room.
@@ -174,7 +174,7 @@ typedef struct ph_config {
                              * (default 1 = on; native only, wasm ignores it) */
 
     const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only */
-    const char *release;      /* e.g. "myapp@1.2.3" — tags every event */
+    const char *release;      /* e.g. "myapp@1.2.3" - tags every event */
 
     int enabled;         /* master switch; 0 => every call is a no-op */
     int person_profiles; /* ph_person_profiles (default PH_IDENTIFIED_ONLY) */
@@ -196,7 +196,7 @@ typedef struct ph_config {
     int crash_handler; /* install the in-process signal_crash handler (POSIX
                         * signals / Windows SEH): a fatal native crash is
                         * persisted and shipped as a $exception on the next
-                        * launch. Default 0 = off (opt-in — it installs
+                        * launch. Default 0 = off (opt-in - it installs
                         * process-global handlers). Requires offline_path.
                         * Native only; wasm ignores it. */
 } ph_config;
@@ -276,7 +276,7 @@ void ph_register(const ph_props *super_props);
 void ph_unregister(const char *key);
 
 /* Report a structured error as a $exception event. This is the
- * app-reported ("posthog_exception") path — you caught something and want it
+ * app-reported ("posthog_exception") path - you caught something and want it
  * tracked. It is NOT a crash handler: for fatal native crashes, set
  * cfg.crash_handler (the signal_crash handler routes through here on the next
  * launch). */

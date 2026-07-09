@@ -1,8 +1,8 @@
 /*
- * ph_native.c — the background sender thread and flush coordination.
+ * ph_native.c - the background sender thread and flush coordination.
  *
  * capture() only ever touches the ring (ph_core.c). Everything expensive for
- * product events — serialization, before_send, the network POST — happens here,
+ * product events - serialization, before_send, the network POST - happens here,
  * off the caller thread. Exception events pre-scrub their structured payload
  * before enqueue so raw exception text can be redacted. The loop parks on the
  * queue's condition variable until it has
@@ -157,7 +157,7 @@ static void offline_spill(const char *body, size_t len) {
 }
 
 /* Replay spilled batches oldest-first. A 2xx is accepted and dropped from the
- * spill — a quota_limited 200 still accepted the request (its events were
+ * spill - a quota_limited 200 still accepted the request (its events were
  * server-dropped), so re-sending won't recover them, matching how send_batch
  * treats a delivered batch. Stop replaying on the first transient failure, or
  * once a response arms the rate limiter, keeping the untried remainder so order
@@ -195,15 +195,15 @@ static void offline_replay(void) {
             size_t linelen = i - line_start;
             int keep_line;
             if (stopped) {
-                keep_line = 1; /* never attempted — keep for a later drain */
+                keep_line = 1; /* never attempted - keep for a later drain */
             } else {
                 int status = post_and_note(buf + line_start, linelen);
                 if (status >= 200 && status < 300) {
-                    keep_line = 0; /* accepted (even a quota 200) — drop it */
+                    keep_line = 0; /* accepted (even a quota 200) - drop it */
                     if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()))
                         stopped = 1; /* ...but hold the untried remainder */
                 } else {
-                    keep_line = 1; /* transient failure — keep and stop */
+                    keep_line = 1; /* transient failure - keep and stop */
                     stopped = 1;
                 }
             }
@@ -312,7 +312,7 @@ static int scrub_events(ph_event *evs, int n) {
         int kind = evs[i].kind;
         if (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) {
             /* Exceptions pre-scrub at capture (before_send already ran), but
-             * super props / groups are stamped afterward — so still re-apply the
+             * super props / groups are stamped afterward - so still re-apply the
              * denylist to those, just don't run the hook a second time. */
             if (evs[i].flags & PH_EVF_SCRUBBED) {
                 if (g_ph.denylist_count > 0) scrub_one(&evs[i], 0);
@@ -327,7 +327,7 @@ static int scrub_events(ph_event *evs, int n) {
 }
 
 /* Sleep up to `ms` in small chunks, returning 1 the moment shutdown is
- * requested — so retry backoff never delays ph_shutdown by the full schedule. */
+ * requested - so retry backoff never delays ph_shutdown by the full schedule. */
 static int sender_backoff_wait(int ms) {
     int slept = 0;
     while (slept < ms) {
@@ -445,7 +445,7 @@ static void drain(ph_event *scratch, int final) {
             int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
             if (n == 0) break;
             send_batch(scratch, n);
-            /* A batch just tripped the limiter — stop, hold the rest queued. */
+            /* A batch just tripped the limiter - stop, hold the rest queued. */
             if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break;
         }
     } else if (final) {
@@ -532,7 +532,7 @@ void ph__set_transport(const ph_transport *t) {
     old = g_ph.transport;
     g_ph.transport = *t;
     ph_mutex_unlock(&g_ph.flush_lock);
-    /* Safe only when no send is in flight (call right after ph_init) — the
+    /* Safe only when no send is in flight (call right after ph_init) - the
      * previous transport may still be referenced by an active POST otherwise. */
     if (old.destroy) old.destroy(old.self);
 }
@@ -546,7 +546,7 @@ void ph_flush(int timeout_ms) {
         deadline_mono = ph_now_mono_ns() + (uint64_t)timeout_ms * 1000000ull;
 
     /* Snapshot the drain generation before waking, so we wait for a *full*
-     * cycle to complete — which is where an offline replay happens, even when
+     * cycle to complete - which is where an offline replay happens, even when
      * the in-memory queue is already empty. */
     ph_mutex_lock(&g_ph.flush_lock);
     gen0 = g_ph.drain_gen;

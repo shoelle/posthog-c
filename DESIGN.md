@@ -1,4 +1,4 @@
-# posthog-c — Design
+# posthog-c - Design
 
 The architecture of the SDK and the reasoning behind it. This documents the
 shape as built and where each remaining roadmap stage plugs in. It is the
@@ -11,7 +11,7 @@ decision-oriented companion to the code; the public contract is
 - **Two transports, one API.** `native` brings its own HTTP + threading; `wasm`
   reuses the browser's `window.posthog`. Callers can't tell which is compiled
   in. Only the delivery mechanism differs.
-- **Ride the raw ingestion API** (`/batch/`, `/i/v0/e/`, `/flags/`) — no
+- **Ride the raw ingestion API** (`/batch/`, `/i/v0/e/`, `/flags/`) - no
   dependency on another PostHog SDK.
 - **Embeddable and hot-path-safe.** POD configs, fixed-capacity buffers, no
   exceptions/RTTI in the core, and a capture path that never allocates so it
@@ -29,7 +29,7 @@ decision-oriented companion to the code; the public contract is
         (own HTTP + sender thread)  (window.posthog shim)
 ```
 
-A bare C++ app has no HTTP or TLS, so the **native** backend brings its own —
+A bare C++ app has no HTTP or TLS, so the **native** backend brings its own -
 plus a background sender thread and an on-disk spill queue. A browser page has
 already loaded posthog-js, so the **wasm** backend is a ~30-line `EM_ASM` shim
 that calls straight into the live `window.posthog`, reusing its batching,
@@ -55,7 +55,7 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
 - **Capture is copy-and-return.** The caller builds a POD `ph_props` on the
   stack; `ph_capture` snapshots identity + super-properties + group scoping
   under one mutex and packs a self-contained event into a preallocated ring
-  slot. It reads only a cheap monotonic tick and bumps an atomic sequence — no
+  slot. It reads only a cheap monotonic tick and bumps an atomic sequence - no
   wall clock, no RNG, no heap. The ring is a fixed array sized at init; when it
   fills, the oldest event is dropped and a counter bumped, so a producer that
   outruns the network degrades gracefully instead of blocking.
@@ -111,7 +111,7 @@ customer's own integration reference:
   delivery dedups instead of double-counting. To honor the heap/clock-free
   capture path, `ph_capture` records only a monotonic tick; the sender
   reconstructs each event's wall-clock time from a single clock reading taken at
-  init — so even a long-queued offline event reports when it actually happened.
+  init - so even a long-queued offline event reports when it actually happened.
 - **Auto-properties** (`$lib`, `$lib_version`, `$lib_backend` = native/wasm,
   `$os`, `arch`, `release`) are stamped by the serializer, so dashboards slice
   by version and platform with zero caller effort.
@@ -129,7 +129,7 @@ customer's own integration reference:
   IPs, emails, URL query strings) with shared test vectors follows, so native
   and wasm can't drift.
 - **`property_denylist`** strips named keys from every event in the same
-  sender-side scrub pass — the blunt companion to the programmable hook. The
+  sender-side scrub pass - the blunt companion to the programmable hook. The
   scrub pass unpacks a ring slot back into a `ph_props`, applies the denylist +
   hook, and repacks, leaving `$groups` untouched.
 - **Rate limiter.** A token bucket on the capture path (`rate_limit_per_sec`)
@@ -139,17 +139,17 @@ customer's own integration reference:
   `ph_dropped_events()`.
 - **Server backpressure.** The client bucket caps what we *emit*; the sender
   also honors what the server *asks for*. On HTTP `429` (or `503` carrying a
-  `Retry-After`, per RFC 9110) it parses the header — delay-seconds or an
-  HTTP-date — arms a monotonic hold, and skips draining until the window clears,
+  `Retry-After`, per RFC 9110) it parses the header - delay-seconds or an
+  HTTP-date - arms a monotonic hold, and skips draining until the window clears,
   so a throttled endpoint isn't hammered batch-after-batch. Held events wait in
   the ring (drop-oldest on overflow); a small clock-derived jitter de-syncs a
   fleet throttled at once. The hold itself is pure and unit-tested
   ([`src/ph_ratelimit.c`](src/ph_ratelimit.c)); transports surface the header and
   a body prefix through the [`ph_transport`](src/ph_internal.h) seam. **Two
   signals feed the same hold:** standard HTTP `429`/`503` (what an `/ingest`
-  proxy — Cloudflare, nginx, a gateway — emits), and PostHog's own event-quota
+  proxy - Cloudflare, nginx, a gateway - emits), and PostHog's own event-quota
   notice, which its capture endpoint returns as `200` + a
-  `{"quota_limited": ["events", …]}` body — no `429`, no header. On the quota
+  `{"quota_limited": ["events", …]}` body - no `429`, no header. On the quota
   body the sender arms the default window; the batch itself was accepted (`200`)
   so it is not resent. The `200`-body detection is PostHog-specific and lives in
   the sender ([`src/ph_native.c`](src/ph_native.c)), keeping `ph_ratelimit` a
@@ -176,7 +176,7 @@ customer's own integration reference:
 ## 7. Tradeoffs & open questions
 
 1. **TLS library.** Decided per-platform, following "reuse what the host has":
-   **WinHTTP on Windows** (done — validated against the OS trust store, no
+   **WinHTTP on Windows** (done - validated against the OS trust store, no
    vendoring), Secure Transport / NSURLSession on macOS next, and a **vendored
    BearSSL** (tiny, MIT) on Linux, which has no universal HTTPS client. Windows
    already ships a TLS client, so we don't bundle a second one there.
@@ -187,19 +187,19 @@ customer's own integration reference:
    portability; this repo leads with **Zig** to match its first customer (a game
    engine) and the stated toolchain preference, and exposes the sources so a CMake shim
    can wrap them later. Native + WASM both build in CI.
-4. **C core vs C++ core.** Implemented in **C11** — a library literally named
-   `posthog-c`, maximally embeddable, with zero C++ runtime dependency — plus a
+4. **C core vs C++ core.** Implemented in **C11** - a library literally named
+   `posthog-c`, maximally embeddable, with zero C++ runtime dependency - plus a
    header-only C++ convenience wrapper. C ABI buys FFI + ABI stability + the
    broadest reuse.
 5. **Fixed capacities.** Per-event property caps and the ring size are
    compile-time constants (overridable with `-D`). Safe because the SDK is
    consumed as source. The tradeoff: a pathological event with many long strings
    has its overflowing properties dropped (and counted), never a heap allocation.
-6. **Session replay:** out of scope — no DOM/canvas to record from C, and a
+6. **Session replay:** out of scope - no DOM/canvas to record from C, and a
    privacy liability. Explicitly excluded.
 7. **Compression dependency.** `/batch/` bodies are gzip'd (`Content-Encoding:
    gzip`, on by default like posthog-js; opt out with `cfg.gzip = 0`). The one
-   vendored dependency is `third_party/sdefl` — a single-file, ~525-LoC,
+   vendored dependency is `third_party/sdefl` - a single-file, ~525-LoC,
    compress-only DEFLATE lib (MIT / public domain), wrapped in `ph_gzip.c` to
    emit the gzip container. Native only: the wasm backend leaves compression to
    posthog-js. Chosen over miniz for being far smaller and compress-only, which
@@ -217,7 +217,7 @@ Three origins produce a `$exception`, distinguished by how the crash was caught
 | `minidump_crash` | out-of-process Crashpad minidump | future; the `posthog-crash` service |
 
 `signal_crash` (opt in with `cfg.crash_handler`, requires `offline_path`) turns a
-fatal native fault into a `$exception` delivered on the **next** launch — a crashed
+fatal native fault into a `$exception` delivered on the **next** launch - a crashed
 process can't reliably reach the network, so the flow is *crash → persist →
 replay*, which reuses the offline spill's replay half and the `ph_capture_exception`
 serializer wholesale. Only two pieces are new: the OS handler and the crash-record
@@ -225,20 +225,20 @@ format.
 
 - **The handler stays minimal.** It runs in a dying process, so it snapshots only
   the signal, the faulting address, and the stack, then `write()`s one fixed
-  record — no JSON, no `malloc`, on a static scratch buffer and (POSIX) a 64 KB
+  record - no JSON, no `malloc`, on a static scratch buffer and (POSIX) a 64 KB
   `sigaltstack` so a stack-overflow crash still has room. The faulting
   instruction (from the crash context's `RIP`/`PC`) leads the trace, since the
   captured top frames are the handler + dispatcher themselves.
 - **Frames are `(module, offset)`, not absolute addresses.** ASLR relocates
   modules between the crash and the replay, so an absolute address from the dead
   process is meaningless in the next one. The handler resolves each address to
-  its module base (`dladdr` / `GetModuleHandleEx`) and stores `basename + offset`
-  — stable across runs and resolvable by a symbol server. Turning offsets into
+  its module base (`dladdr` / `GetModuleHandleEx`) and stores `basename + offset` -
+  stable across runs and resolvable by a symbol server. Turning offsets into
   function names needs the debug info, which is the `minidump_crash` server's
   job; the SDK deliberately stops at capture. This also means **no `dbghelp`/
   symbol dependency** in the SDK.
 - **Known limits (honest v0.6).** The per-frame module lookup takes the loader
-  lock, so a crash *inside* the loader can stall the handler — the fundamental
+  lock, so a crash *inside* the loader can stall the handler - the fundamental
   reason robust capture is out-of-process (Crashpad). The replayed event is
   timestamped at next launch, not crash time. Both are documented in
   [`TODO.md`](TODO.md); the answer to both is the `minidump_crash` path, not more

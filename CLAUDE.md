@@ -1,4 +1,4 @@
-# posthog-c — working notes
+# posthog-c - working notes
 
 An embeddable **PostHog SDK for C/C++**: one public C ABI, a native backend
 (own HTTP + background sender), and a WASM backend (a shim over
@@ -9,8 +9,8 @@ coding brief: conventions, the module map, and the invariants that must hold.
 ## Canonical docs
 
 When these conflict, prefer in order:
-1. [`DESIGN.md`](DESIGN.md) — architecture + event/wire model + roadmap
-2. this file — conventions + module map
+1. [`DESIGN.md`](DESIGN.md) - architecture + event/wire model + roadmap
+2. this file - conventions + module map
 3. inline comments near the code
 4. [`README.md`](README.md)
 
@@ -27,12 +27,12 @@ include/posthog.hpp      header-only C++ convenience wrapper
 src/ph_core.c            public API + the shared enqueue path
 src/ph_native.c          sender thread + flush handshake + transport + offline spill/replay
 src/ph_serialize.c       event record -> /batch/ JSON  (parity-critical, pure)
-src/ph_jsonval.c         minimal JSON *parser* (DOM) — used only to read /flags/
+src/ph_jsonval.c         minimal JSON *parser* (DOM) - used only to read /flags/
 src/ph_flags.c           feature flags: /flags/ fetch, cache, $feature_flag_called
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
 src/ph_tls.c             HTTPS via WinHTTP (Windows); BearSSL for Linux/macOS is next
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
-src/ph_ratelimit.{h,c}   server-backpressure hold (429/Retry-After + PostHog quota) — pure, unit-tested
+src/ph_ratelimit.{h,c}   server-backpressure hold (429/Retry-After + PostHog quota) - pure, unit-tested
 src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a persisted $exception replayed next run
 src/ph_wasm.c            WASM backend: the full API as an EM_ASM shim over window.posthog
 src/ph_queue.{h,c}       bounded drop-oldest ring; owns the ph_event record
@@ -73,7 +73,7 @@ byte-for-byte.
 
 ## Load-bearing invariants
 
-These are the things a change must not break — call them out and test both
+These are the things a change must not break - call them out and test both
 sides if a change risks them:
 
 1. **Capture is hot-path-safe.** `ph_capture` (and the whole enqueue path) must
@@ -89,7 +89,7 @@ sides if a change risks them:
    *inside* `properties` for `/batch/` items; `$set`/`$groups`/`$create_alias`
    have exact shapes (see `ph_serialize.c` + `test_serialize.c`). Don't
    freelance the JSON.
-4. **`enabled = 0` is a true no-op** — no thread, no queue, every call returns
+4. **`enabled = 0` is a true no-op** - no thread, no queue, every call returns
    quietly.
 
 ## Build and test

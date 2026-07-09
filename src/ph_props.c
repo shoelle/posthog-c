@@ -1,10 +1,10 @@
 /*
- * ph_props.c — the caller-facing property builder and the compact packer that
+ * ph_props.c - the caller-facing property builder and the compact packer that
  * turns a ph_props into the bytes stored in a ring slot.
  *
  * The public setters write into a POD ph_props the caller owns (usually on the
  * stack). ph_pack_props / ph_pack_str_entry serialize those into the fixed
- * event blob at capture time — no allocation, and any entry that would overflow
+ * event blob at capture time - no allocation, and any entry that would overflow
  * the blob is skipped rather than truncated mid-value.
  */
 #include "ph_internal.h"

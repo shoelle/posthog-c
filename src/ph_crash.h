@@ -1,5 +1,5 @@
 /*
- * ph_crash.h — in-process signal_crash handler (v0.6), native only.
+ * ph_crash.h - in-process signal_crash handler (v0.6), native only.
  *
  * Turns a fatal native fault (a POSIX signal or a Windows SEH exception) into a
  * persisted PostHog $exception that ships on the *next* launch. Naming (see the
@@ -14,7 +14,7 @@
  * pairs into a fixed record, then write() it. Capturing module + offset (not a
  * raw absolute address) is what makes the frames meaningful across the restart:
  * ASLR relocates modules between runs, so an absolute address from the crashed
- * process is nonsense in the next one — but "myapp.exe + 0x1361" is stable, and
+ * process is nonsense in the next one - but "myapp.exe + 0x1361" is stable, and
  * a symbol server can resolve it. Turning offsets into function names is the
  * minidump_crash server's job; the SDK deliberately stops at capture.
  *
@@ -79,7 +79,7 @@ typedef struct ph_crash_info {
     uint64_t frame_off[PH_CRASH_MAX_FRAMES];    /* offset in module (or absolute) */
 } ph_crash_info;
 
-/* Encode/decode the crash record — the wire between the signal handler and the
+/* Encode/decode the crash record - the wire between the signal handler and the
  * next run's replay. encode returns bytes written (0 on overflow); decode
  * returns 1 on a valid record, 0 otherwise. Pure; unit-tested directly. */
 size_t ph_crash_encode(const ph_crash_info *in, char *buf, size_t cap);

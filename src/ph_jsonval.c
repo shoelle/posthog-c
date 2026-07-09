@@ -27,7 +27,7 @@ typedef struct {
 } cursor;
 
 /* Cap recursion so a deeply nested (possibly malicious) /flags/ body can't blow
- * the stack — real responses nest only a handful deep. Tunable via -D. */
+ * the stack - real responses nest only a handful deep. Tunable via -D. */
 #ifndef PH_JV_MAX_DEPTH
 #define PH_JV_MAX_DEPTH 128
 #endif
@@ -353,7 +353,7 @@ static ph_jv *parse_object(cursor *c, int depth) {
 static ph_jv *parse_value(cursor *c, int depth) {
     skip_ws(c);
     if (c->p >= c->end) return NULL;
-    if (depth > PH_JV_MAX_DEPTH) return NULL; /* too deeply nested — reject */
+    if (depth > PH_JV_MAX_DEPTH) return NULL; /* too deeply nested - reject */
     switch (*c->p) {
         case '{': return parse_object(c, depth);
         case '[': return parse_array(c, depth);

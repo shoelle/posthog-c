@@ -1,5 +1,5 @@
 /*
- * ph_internal.h — shared internal definitions for the native backend.
+ * ph_internal.h - shared internal definitions for the native backend.
  *
  * Not installed; consumers only ever see posthog.h. This declares the SDK
  * context, the packed event record that lives in the ring, and the transport
@@ -23,7 +23,7 @@
 #define PH_DISTINCT_ID_CAP 128
 
 /* Group memberships scoping subsequent events via $groups. A handful is
- * plenty (PostHog's own group types are few: company/project/... — for a
+ * plenty (PostHog's own group types are few: company/project/... - for a
  * game, "game"/"creator"). */
 #ifndef PH_MAX_GROUPS
 #define PH_MAX_GROUPS 4
@@ -37,7 +37,7 @@
 /* Exception payload caps. Error capture is not the product-event hot path, but
  * the structured $exception_list still stays bounded before it enters the fixed
  * event blob. The frame count is an upper bound; in practice the event blob
- * (PH_EVENT_DATA_CAP) is what limits how many frames fit — build_exception_list
+ * (PH_EVENT_DATA_CAP) is what limits how many frames fit - build_exception_list
  * stops early and truncates gracefully. Raise both together for deeper stacks. */
 #ifndef PH_MAX_EXCEPTION_FRAMES
 #define PH_MAX_EXCEPTION_FRAMES 32
@@ -58,7 +58,7 @@
 #endif
 
 /* Offline persistence: batches that fail to send spill to one append-only
- * NDJSON file (one serialized batch body per line — safe because our JSON
+ * NDJSON file (one serialized batch body per line - safe because our JSON
  * never contains raw newlines) under the configured directory, capped in size
  * with drop-oldest. */
 #ifndef PH_PATH_CAP
@@ -104,7 +104,7 @@ typedef struct ph_transport {
     int (*send)(void *self, const char *url, const char *body, size_t body_len,
                 int timeout_ms, ph_send_meta *meta);
     /* Like send, but also captures the response body into out (NUL-terminated,
-     * capped at out_cap) — used for /flags/. NULL if unsupported. */
+     * capped at out_cap) - used for /flags/. NULL if unsupported. */
     int (*fetch)(void *self, const char *url, const char *body, size_t body_len,
                  int timeout_ms, char *out, size_t out_cap);
     void (*destroy)(void *self);
@@ -208,8 +208,8 @@ extern ph_ctx g_ph;
 
 /* Internal packed-stream types extending the public scalar range
  * (STR/DOUBLE/INT/BOOL = 0..3):
- *   GROUP   — key = group type, value = group key; collected into "$groups".
- *   RAWJSON — value is a pre-serialized JSON fragment emitted verbatim (used for
+ *   GROUP   - key = group type, value = group key; collected into "$groups".
+ *   RAWJSON - value is a pre-serialized JSON fragment emitted verbatim (used for
  *             the $exception_list payload, which the flat packer can't express).
  * Both are "non-scalar": the sender's scrub preserves them untouched while
  * before_send only sees the scalar user properties. */
@@ -239,7 +239,7 @@ int ph_blob_next(const char **cur, const char *end, unsigned char *type,
 void ph_unpack_props(const char *blob, size_t len, ph_props *out);
 
 /* Serialize `events` into a /batch/ envelope body appended to `out`.
- * Pure and side-effect-free: no threads, no network — this is the
+ * Pure and side-effect-free: no threads, no network - this is the
  * parity-critical piece and is unit-tested directly. */
 struct ph_strbuf;
 void ph_serialize_batch(const ph_ctx *ctx, const ph_event *events, int n,

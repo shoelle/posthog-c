@@ -1,5 +1,5 @@
 /*
- * ph_json.h — a write-only JSON encoder over ph_strbuf.
+ * ph_json.h - a write-only JSON encoder over ph_strbuf.
  *
  * We only ever *write* JSON (the ingestion API is fire-and-forth), and the
  * schema is small and fixed, so a hand-rolled writer beats a parser

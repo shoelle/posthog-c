@@ -1,5 +1,5 @@
 /*
- * ph_queue.h — the bounded, drop-oldest ring the capture path feeds.
+ * ph_queue.h - the bounded, drop-oldest ring the capture path feeds.
  *
  * The ring is allocated once at init; ph_capture() never allocates. When the
  * ring is full a push evicts the oldest event and bumps a dropped counter, so

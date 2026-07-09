@@ -1,7 +1,7 @@
 /*
  * Node harness for the WASM backend. Mocks window.posthog + the host-bootstrapped
  * install id, runs the compiled shim, and asserts each call reached posthog-js
- * with the right event/props — including that the shared serializer produced
+ * with the right event/props - including that the shared serializer produced
  * parity values (1.5 stays 1.5, bools stay booleans).
  *
  * Run via `zig build test-wasm` (which emcc-compiles ./test_wasm.mjs first).

@@ -1,5 +1,5 @@
 /*
- * ph_wasm.c — the WebAssembly backend: a thin shim over the browser's already
+ * ph_wasm.c - the WebAssembly backend: a thin shim over the browser's already
  * loaded posthog-js. Selected at compile time by __EMSCRIPTEN__.
  *
  * There is no network stack here: posthog-js owns batching, retry, offline, and
@@ -12,7 +12,7 @@
  *
  * The public API is implemented entirely here; the shared property/JSON code
  * (ph_props.c, ph_json.c, ph_str.c, ph_serialize.c) compiles into the wasm
- * module unchanged. ph_flush/ph_shutdown are no-ops — posthog-js manages its
+ * module unchanged. ph_flush/ph_shutdown are no-ops - posthog-js manages its
  * own lifecycle.
  */
 #if defined(__EMSCRIPTEN__)
@@ -347,7 +347,7 @@ void ph_reload_feature_flags(void) {
 /* posthog-js owns delivery and its own drop accounting; nothing to report. */
 uint64_t ph_dropped_events(void) { return 0; }
 
-/* No SDK-owned queue or thread to drain — posthog-js manages its lifecycle. */
+/* No SDK-owned queue or thread to drain - posthog-js manages its lifecycle. */
 void ph_flush(int timeout_ms) { (void)timeout_ms; }
 void ph_shutdown(void) { g_enabled = 0; g_identity_ok = 0; }
 

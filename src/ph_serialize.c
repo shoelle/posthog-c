@@ -1,10 +1,10 @@
 /*
- * ph_serialize.c — event records -> the PostHog /batch/ envelope.
+ * ph_serialize.c - event records -> the PostHog /batch/ envelope.
  *
  * This is the one place event JSON is produced, and it is deliberately pure:
  * no threads, no clocks beyond the per-event reconstruction, no network. That
  * makes it directly unit-testable and is what native/wasm parity is asserted
- * against — both backends must produce the same event shape.
+ * against - both backends must produce the same event shape.
  *
  * Envelope (confirmed against the capture API and the customer's reference):
  *   {"api_key":"…","historical_migration":false,"batch":[ <event>, … ]}
@@ -282,7 +282,7 @@ void ph_serialize_batch(const ph_ctx *ctx, const ph_event *events, int n,
 /* Serialize a ph_props to a JSON object `{"k":v,...}` with the same encoder the
  * native batch path uses. The WASM shim calls this to build the properties it
  * hands to window.posthog.capture, so a given ph_props yields byte-identical
- * property JSON on both backends — the core of native/wasm parity. */
+ * property JSON on both backends - the core of native/wasm parity. */
 void ph_serialize_props_object(const ph_props *p, ph_strbuf *out) {
     int i, first = 1;
     ph_strbuf_append_char(out, '{');

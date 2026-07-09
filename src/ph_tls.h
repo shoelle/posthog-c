@@ -1,9 +1,9 @@
 /*
- * ph_tls.h — the HTTPS side of the native transport (v0.2).
+ * ph_tls.h - the HTTPS side of the native transport (v0.2).
  *
  * https:// URLs route here from ph_http.c. On Windows we reuse WinHTTP, which
  * is always present and validates the server certificate against the OS trust
- * store — so on Windows we "reuse what the host has" rather than shipping a
+ * store - so on Windows we "reuse what the host has" rather than shipping a
  * second TLS stack. macOS (Secure Transport) and Linux (a vendored BearSSL)
  * backends slot in behind this same call; until then they return an error.
  */
@@ -26,7 +26,7 @@ int ph_tls_send(const char *host, int port, const char *path, const char *body,
                 size_t body_out_cap);
 
 /* Like ph_tls_send, but also copy the response body into out (NUL-terminated,
- * capped at out_cap) — used for /flags/. */
+ * capped at out_cap) - used for /flags/. */
 int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
                  size_t body_len, int timeout_ms, char *out, size_t out_cap);
 

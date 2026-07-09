@@ -1,8 +1,8 @@
 /*
- * ph_ratelimit.h — server-directed send backpressure.
+ * ph_ratelimit.h - server-directed send backpressure.
  *
- * When the ingestion endpoint pushes back — HTTP 429 Too Many Requests
- * (RFC 6585), or a 503 carrying a Retry-After (RFC 9110 s10.2.3) — the sender
+ * When the ingestion endpoint pushes back - HTTP 429 Too Many Requests
+ * (RFC 6585), or a 503 carrying a Retry-After (RFC 9110 s10.2.3) - the sender
  * should stop sending until the server's window elapses, rather than draining
  * batch after batch into a throttle. This is a tiny, pure state machine over a
  * single monotonic deadline, plus a Retry-After parser. It touches no globals
@@ -10,7 +10,7 @@
  * logic) with no socket in the loop.
  *
  * The deadline is a monotonic tick, not wall time, so a system clock change
- * cannot shorten or extend a backoff — the same reason the capture path times
+ * cannot shorten or extend a backoff - the same reason the capture path times
  * off ph_now_mono_ns (see ph_time.h).
  */
 #ifndef PH_RATELIMIT_H
@@ -42,7 +42,7 @@ void ph_ratelimit_init(ph_ratelimit *rl);
  * Engage the hold for `window_ms` from now: a small positive jitter is added
  * (so a fleet throttled together does not resume in lockstep) and the total is
  * clamped to PH_RL_MAX_BACKOFF_MS. Exposed so a caller that detects backpressure
- * by a non-HTTP-status signal — e.g. a body-level quota notice — can engage the
+ * by a non-HTTP-status signal - e.g. a body-level quota notice - can engage the
  * same hold as the 429/Retry-After path.
  */
 void ph_ratelimit_arm(ph_ratelimit *rl, uint64_t window_ms, uint64_t now_mono_ns);
@@ -74,7 +74,7 @@ int ph_ratelimit_note_response(ph_ratelimit *rl, int status,
 /* 1 if sends should be held right now. */
 int ph_ratelimit_blocked(const ph_ratelimit *rl, uint64_t now_mono_ns);
 
-/* Milliseconds until the window clears (0 if not blocked) — for diagnostics. */
+/* Milliseconds until the window clears (0 if not blocked) - for diagnostics. */
 uint64_t ph_ratelimit_remaining_ms(const ph_ratelimit *rl, uint64_t now_mono_ns);
 
 #endif /* PH_RATELIMIT_H */

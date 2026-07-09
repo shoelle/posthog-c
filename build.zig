@@ -129,7 +129,7 @@ fn findNode(b: *std.Build) ?[]const u8 {
 
 /// Build the posthog-c static library. A consuming project that vendors this
 /// repo as a submodule can `@import` this build.zig and call create() +
-/// addIncludes() to link it — the usual way to vendor a C library into a Zig build.
+/// addIncludes() to link it - the usual way to vendor a C library into a Zig build.
 pub fn create(
     b: *std.Build,
     target: std.Build.ResolvedTarget,

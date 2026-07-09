@@ -1,5 +1,5 @@
 /*
- * ph_thread.h — the thin threading layer the native sender needs.
+ * ph_thread.h - the thin threading layer the native sender needs.
  *
  * The design assumes the host has no async runtime (a game engine won't host
  * one), so delivery runs on one plain background thread guarded by a mutex +
@@ -8,7 +8,7 @@
  *
  * The concrete platform types are exposed here (not opaque) so ph_ctx can
  * embed a mutex/cond/thread by value. That pulls <windows.h>/<pthread.h> into
- * the internal TUs that include this — acceptable for an internal header.
+ * the internal TUs that include this - acceptable for an internal header.
  */
 #ifndef PH_THREAD_H
 #define PH_THREAD_H

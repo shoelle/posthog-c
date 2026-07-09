@@ -1,7 +1,7 @@
 /*
  * The C side of the WASM behavioral test. Exposed as wasm_run_test() (not main)
  * so the Node harness can install its window.posthog mock, spin up the runtime,
- * then call in — deterministic ordering, no reliance on auto-run timing.
+ * then call in - deterministic ordering, no reliance on auto-run timing.
  */
 #include "posthog.h"
 

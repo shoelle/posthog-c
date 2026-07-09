@@ -369,7 +369,7 @@ int ph__http_parse_response_meta(const char *resp, size_t resp_len,
 /* True once enough of the response is in hand to stop reading (rather than wait
  * for the peer to close): the 0-chunk for chunked, Content-Length bytes when
  * given, else any body at all. Either path also stops once the bounded prefix
- * fills — we only need the status and the small quota notice, not the body. */
+ * fills - we only need the status and the small quota notice, not the body. */
 int ph__http_send_response_complete(const char *resp, size_t resp_len) {
     const char *sep = find_header_end(resp, resp_len);
     long content_len;
@@ -396,7 +396,7 @@ int ph__http_send_response_complete(const char *resp, size_t resp_len) {
 }
 
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
- * terminator) is copied into it (NUL-terminated, capped) — used for /flags/;
+ * terminator) is copied into it (NUL-terminated, capped) - used for /flags/;
  * otherwise only the status line is read (the capture path discards the body).
  * Returns the HTTP status, or <0 on failure. */
 static int do_http(const char *url, const char *body, size_t body_len,

@@ -51,7 +51,7 @@ static int do_tls(const char *host, int port, const char *path, const char *body
     WinHttpAddRequestHeaders(req, L"Content-Type: application/json", (DWORD)-1L,
                              WINHTTP_ADDREQ_FLAG_ADD);
     /* The only encoding we ever set is gzip (the send path), so a non-NULL value
-     * means gzip — avoids a UTF-8 -> wide conversion for a fixed header. */
+     * means gzip - avoids a UTF-8 -> wide conversion for a fixed header. */
     if (content_encoding && content_encoding[0])
         WinHttpAddRequestHeaders(req, L"Content-Encoding: gzip", (DWORD)-1L,
                                  WINHTTP_ADDREQ_FLAG_ADD);
@@ -67,7 +67,7 @@ static int do_tls(const char *host, int port, const char *path, const char *body
                             WINHTTP_NO_HEADER_INDEX))
         rc = (int)status;
 
-    /* Retry-After (if present) — the raw header value, parsed by the limiter.
+    /* Retry-After (if present) - the raw header value, parsed by the limiter.
      * WinHTTP returns it as a string; a small buffer suffices (seconds or a
      * ~29-char HTTP-date). */
     if (retry_after && retry_after_cap > 0) {

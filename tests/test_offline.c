@@ -44,7 +44,7 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
-/* Write exactly the given bytes (no trailing newline added) — used to forge a
+/* Write exactly the given bytes (no trailing newline added) - used to forge a
  * torn spill file, as a process killed mid-write would leave behind. */
 static void write_file(const char *path, const char *data) {
     FILE *f = fopen(path, "wb");

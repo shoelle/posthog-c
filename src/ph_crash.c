@@ -1,9 +1,9 @@
 /*
- * ph_crash.c — in-process signal_crash handler (see ph_crash.h).
+ * ph_crash.c - in-process signal_crash handler (see ph_crash.h).
  *
  * Two worlds live here, kept strictly apart:
  *   - the handler (posix_handler / win_filter): runs in a dying process, so it
- *     stays lean and allocation-free — it snapshots the stack as (module,
+ *     stays lean and allocation-free - it snapshots the stack as (module,
  *     offset) pairs into a static record and write()s it. The one concession is
  *     a loader query per frame (dladdr / GetModuleHandleEx) to find each
  *     module's base; that takes the loader lock, so a crash *inside* the loader
@@ -302,7 +302,7 @@ int ph_signal_crash_replay(const char *dir) {
     fclose(f);
 
     if (!ph_crash_decode(buf, rd, &ci)) {
-        remove(path); /* corrupt / foreign / torn — don't let it linger */
+        remove(path); /* corrupt / foreign / torn - don't let it linger */
         return 0;
     }
 

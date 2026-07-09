@@ -4,10 +4,10 @@ Repo-local guidance for coding agents working in `posthog-c/`.
 
 ## Canonical docs
 
-- [`CLAUDE.md`](CLAUDE.md) — the coding brief: conventions, module map, invariants.
-- [`DESIGN.md`](DESIGN.md) — architecture, event/wire model, roadmap, tradeoffs.
-- [`README.md`](README.md) — public-facing intro + quick start.
-- [`include/posthog.h`](include/posthog.h) — the public C ABI (the contract).
+- [`CLAUDE.md`](CLAUDE.md) - the coding brief: conventions, module map, invariants.
+- [`DESIGN.md`](DESIGN.md) - architecture, event/wire model, roadmap, tradeoffs.
+- [`README.md`](README.md) - public-facing intro + quick start.
+- [`include/posthog.h`](include/posthog.h) - the public C ABI (the contract).
 
 When they conflict, prefer `DESIGN.md`, then `CLAUDE.md`, then inline comments,
 then `README.md`.
@@ -43,7 +43,7 @@ wasm shim.
 - Keep `ph_capture` hot-path-safe: no `malloc`, wall clock, or RNG on the caller
   thread (invariant #1 in `CLAUDE.md`).
 - All event JSON shaping lives in `ph_serialize.c` and must stay pure and
-  testable — that's how native/wasm parity is guaranteed.
+  testable - that's how native/wasm parity is guaranteed.
 - Don't freelance the wire format; it's fixed by PostHog's ingestion API.
 - Public API is `ph_*`; internal cross-file symbols are `ph__*`; file-local
   helpers are `static`. Additive ABI changes only within a major version.

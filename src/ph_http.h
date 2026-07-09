@@ -1,7 +1,7 @@
 /*
- * ph_http.h — the native HTTP transport.
+ * ph_http.h - the native HTTP transport.
  *
- * http:// goes over a plaintext socket (Winsock/POSIX) — handy for a local dev
+ * http:// goes over a plaintext socket (Winsock/POSIX) - handy for a local dev
  * proxy. https:// delegates to the TLS backend in ph_tls.c (WinHTTP on
  * Windows). The plaintext request *builder* is split from the socket send so
  * the wire format can be unit-tested without a live server.

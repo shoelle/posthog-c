@@ -1,5 +1,5 @@
 /*
- * Fuzz target: the /flags/ JSON parser (ph_jv_parse) — the SDK's only parser of
+ * Fuzz target: the /flags/ JSON parser (ph_jv_parse) - the SDK's only parser of
  * server-controlled, network-delivered bytes. Parse, walk the tree (to touch
  * node memory + the accessors), free.
  */

@@ -3,7 +3,7 @@
 # flipping to CRLF and showing every file as modified.
 * text=auto eol=lf
 
-# Explicit binaries — never LF-normalize.
+# Explicit binaries - never LF-normalize.
 *.png binary
 *.ico binary
 *.a binary

@@ -1,5 +1,5 @@
 /*
- * quickstart.cpp — the same flow through the header-only C++ wrapper.
+ * quickstart.cpp - the same flow through the header-only C++ wrapper.
  *
  * Build + run:  zig build run-example-cpp
  *

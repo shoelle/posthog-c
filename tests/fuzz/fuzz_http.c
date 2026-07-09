@@ -1,5 +1,5 @@
 /*
- * Fuzz target: the HTTP response parser used on every POST — status line,
+ * Fuzz target: the HTTP response parser used on every POST - status line,
  * headers (Retry-After), and chunked-body decoding. The other surface that
  * consumes server/MITM-controlled bytes. Feed the raw response to both the
  * meta parser and the "response complete?" check.
@@ -27,7 +27,7 @@ const fuzz_seed *fuzz_seeds(size_t *count) {
         static const char s0[] = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
         static const char s1[] = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\n\r\n";
         static const char s2[] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
-        /* chunk size larger than the body — must not over-read */
+        /* chunk size larger than the body - must not over-read */
         static const char s3[] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nAAAA";
         static const char s4[] = "HTTP/1.1 200 OK\r\nContent-Length: 999999999999\r\n\r\n";
         /* chunked with no terminating 0-chunk */

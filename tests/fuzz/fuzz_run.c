@@ -1,5 +1,5 @@
 /*
- * fuzz_run.c — a portable standalone driver for the fuzz targets.
+ * fuzz_run.c - a portable standalone driver for the fuzz targets.
  *
  * Linked in only when libFuzzer isn't available (libFuzzer provides its own
  * main). No coverage feedback: it feeds every seed once, then hammers random
@@ -57,7 +57,7 @@ static size_t mutate(unsigned char *b, size_t len) {
             len--;
             break;
         }
-        case 5: { /* duplicate a block (grows structure — helps nesting) */
+        case 5: { /* duplicate a block (grows structure - helps nesting) */
             size_t p = rnd() % len;
             size_t n = 1 + rnd() % (len - p);
             if (len + n <= FUZZ_CAP) {
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
     if (argc > 2) g_rng = strtoull(argv[2], NULL, 0);
     if (!g_rng) g_rng = 1;
 
-    /* Pass 1: every seed verbatim — catches structural bugs (deep nesting, etc.)
+    /* Pass 1: every seed verbatim - catches structural bugs (deep nesting, etc.)
      * that random mutation is unlikely to synthesize. Flushed so a crash names
      * the culprit seed. */
     for (s = 0; s < nseeds; s++) {
