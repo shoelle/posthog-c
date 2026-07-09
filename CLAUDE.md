@@ -1,7 +1,7 @@
 # posthog-c — working notes
 
 An embeddable **PostHog SDK for C/C++**: one public C ABI, a native backend
-(own HTTP + background sender), and a planned WASM backend (a shim over
+(own HTTP + background sender), and a WASM backend (a shim over
 `window.posthog`). See [`DESIGN.md`](DESIGN.md) for architecture and the
 roadmap, [`README.md`](README.md) for the public intro. This file is the
 coding brief: conventions, the module map, and the invariants that must hold.
@@ -32,6 +32,7 @@ src/ph_flags.c           feature flags: /flags/ fetch, cache, $feature_flag_call
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
 src/ph_tls.c             HTTPS via WinHTTP (Windows); BearSSL for Linux/macOS is next
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
+src/ph_ratelimit.{h,c}   server-backpressure hold (429/Retry-After + PostHog quota) — pure, unit-tested
 src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a persisted $exception replayed next run
 src/ph_wasm.c            WASM backend: the full API as an EM_ASM shim over window.posthog
 src/ph_queue.{h,c}       bounded drop-oldest ring; owns the ph_event record
@@ -114,4 +115,6 @@ standing up a live server.
 - native/wasm parity risk
 - thread-safety of the queue + flush handshake (lock ordering: never take the
   queue lock then the flush lock)
+- async-signal-safety on the `signal_crash` fault path (no malloc/lock/stdio in
+  the handler; see [`ph_crash.c`](src/ph_crash.c))
 - unbounded growth / missing fixed caps

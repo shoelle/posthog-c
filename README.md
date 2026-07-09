@@ -5,8 +5,8 @@ engines that PostHog's existing libraries don't cover. PostHog ships JS,
 Python, Go, Rust, .NET, and mobile SDKs, but nothing for a C++ engine; this
 fills that gap on top of PostHog's raw ingestion API.
 
-> **Status:** v0.1 — core native capture, plus the privacy/reliability layer.
-> C ABI, non-blocking capture, a background sender, and `/batch/` delivery over
+> **Status:** pre-1.0 and developed openly, but already broad. The C ABI,
+> non-blocking capture, a background sender, and `/batch/` delivery over
 > plaintext HTTP (for a local dev proxy) are working and tested — as are
 > anonymous-by-default identity, a `before_send` scrubber, a property denylist,
 > a capture rate limiter, server backpressure (honoring `429`/`Retry-After` and
@@ -25,8 +25,8 @@ fills that gap on top of PostHog's raw ingestion API.
 ## Why
 
 - **One library, two transports.** A single public C ABI with two
-  compile-time backends — **native** (owns HTTP + a background sender thread +,
-  soon, an on-disk offline queue) and **wasm** (a thin shim over the browser's
+  compile-time backends — **native** (owns HTTP + a background sender thread +
+  an on-disk offline queue) and **wasm** (a thin shim over the browser's
   already-loaded `window.posthog`). The split hides behind one `#if`.
 - **No dependency on another PostHog SDK.** Everything rides PostHog's
   documented HTTP endpoints (`/batch/`, `/i/v0/e/`, `/flags/`).
@@ -35,7 +35,7 @@ fills that gap on top of PostHog's raw ingestion API.
   caller thread. All I/O happens on a background thread. That keeps it safe to
   call from a game engine's simulation loop.
 - **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a
-  property denylist, and a master kill-switch (see [DESIGN.md](DESIGN.md) §10).
+  property denylist, and a master kill-switch (see [DESIGN.md](DESIGN.md) §5).
 
 ## Quick start (C)
 

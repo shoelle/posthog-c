@@ -20,9 +20,11 @@ then `README.md`.
 - Implemented in **C11** with a header-only C++ convenience wrapper.
 - **Zig** is the single build entry point. Native targets Windows/macOS/Linux;
   WASM via Emscripten (`zig build test-wasm`).
-- Status: native capture, privacy/reliability, offline queue, HTTPS on Windows,
-  the WASM backend, error tracking, and feature flags are all done and tested.
-  Main gap: Linux/macOS TLS. See the roadmap in `DESIGN.md`.
+- Status: native capture, privacy/reliability (scrubber, denylist, rate limit,
+  server backpressure), offline queue, gzip, HTTPS on Windows, the WASM backend,
+  error tracking, feature flags, and an in-process crash handler (signals / SEH)
+  are done and tested. Main gaps: Linux/macOS TLS and the out-of-process minidump
+  pipeline. See the roadmap in `DESIGN.md`.
 
 ## Build and test
 
@@ -53,6 +55,6 @@ wasm shim.
 
 - hot-path allocations/clock/RNG sneaking into capture
 - wire-shape drift from the ingestion API
-- native/wasm parity risk (once v0.3 lands)
+- native/wasm parity risk
 - queue + flush thread-safety and lock ordering
 - unbounded growth / missing fixed caps

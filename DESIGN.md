@@ -1,7 +1,7 @@
 # posthog-c — Design
 
 The architecture of the SDK and the reasoning behind it. This documents the
-shape as built (v0.1) and where each roadmap stage plugs in. It is the
+shape as built and where each remaining roadmap stage plugs in. It is the
 decision-oriented companion to the code; the public contract is
 [`include/posthog.h`](include/posthog.h).
 
@@ -69,7 +69,7 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
   drained handshake; `ph_shutdown` flushes, joins, and frees.
 - **Transport seam.** Delivery goes through a small vtable
   ([`ph_transport`](src/ph_internal.h)). The default is plaintext HTTP; tests
-  swap in a capturing mock. TLS (v0.2) becomes a second transport, not a
+  swap in a capturing mock. TLS (v0.2) slotted in as a second transport, not a
   rewrite.
 
 ## 3. Identity, baked at capture
@@ -169,8 +169,8 @@ customer's own integration reference:
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP → real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` → `$exception_list` (mechanism + raw stack frames) |
-| **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |
 | **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) → a persisted `$exception` replayed next launch; module+offset frames (§8) |
+| **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |
 | later | out-of-process `minidump_crash` (Crashpad + the separate `posthog-crash` service) |
 
 ## 7. Tradeoffs & open questions

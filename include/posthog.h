@@ -13,7 +13,7 @@
  * can bind the resulting ABI. A header-only C++ convenience wrapper lives in
  * posthog.hpp.
  *
- * Design: see DESIGN.md (§ references in comments point there).
+ * Design rationale: see DESIGN.md.
  * Threading: after ph_init(), every public function is safe to call from any
  * thread. On native, capture() copies into a bounded queue and returns; all
  * network I/O happens on a background sender thread.
@@ -41,7 +41,7 @@ const char *ph_version(void);
 /* --- Compile-time capacities -----------------------------------------
  *
  * These bound the SDK's fixed storage so the capture hot path never calls
- * malloc (§1). They are compile-time constants: when the SDK is consumed as
+ * malloc. They are compile-time constants: when the SDK is consumed as
  * source (the intended path — a submodule wrapped by the host's build), the
  * lib and the caller compile against the same values, so there is no ABI
  * hazard. Override any of them with -D before including this header if your
@@ -68,7 +68,7 @@ typedef enum ph_result {
     PH_ERR_TRUNCATED = -5  /* stored, but a key/value was truncated to fit */
 } ph_result;
 
-/* --- Person-profile policy (§4) --------------------------------------
+/* --- Person-profile policy --------------------------------------
  *
  * Controls whether an event builds a PostHog person profile. Anonymous
  * events are ~4x cheaper and the right default for un-signed-in users.
@@ -88,7 +88,7 @@ typedef enum ph_log_level {
     PH_LOG_DEBUG = 3
 } ph_log_level;
 
-/* --- Property set (§2) ------------------------------------------------
+/* --- Property set ------------------------------------------------
  *
  * A bounded, inline, POD property set. Build one on the stack, fill it with
  * the typed setters, and hand it to ph_capture(); the SDK copies what it
@@ -138,7 +138,7 @@ ph_result ph_props_set_double(ph_props *p, const char *key, double val);
 ph_result ph_props_set_int(ph_props *p, const char *key, int64_t val);
 ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
 
-/* --- before_send scrubber (§10) --------------------------------------
+/* --- before_send scrubber --------------------------------------
  *
  * Runs before serialization. Native product events run on the sender thread;
  * exception events run before enqueue so structured exception text can be
@@ -151,7 +151,7 @@ typedef int (*ph_before_send_fn)(const char *event, ph_props *props, void *user)
 /* Optional diagnostics sink for drops/retries/HTTP errors. NULL = silent. */
 typedef void (*ph_log_fn)(ph_log_level level, const char *msg, void *user);
 
-/* --- Configuration (§2) ----------------------------------------------
+/* --- Configuration ----------------------------------------------
  *
  * POD config passed to ph_init(). Zero-initialize it (memset or {0}) and set
  * only what you need; ph_config_defaults() fills sensible defaults for the
@@ -182,7 +182,7 @@ typedef struct ph_config {
     int send_feature_flag_events; /* emit $feature_flag_called on flag reads (default 1) */
     int preload_flags;            /* fetch flags during ph_init (default 1; v0.7) */
 
-    ph_before_send_fn before_send; /* scrubber (§10); NULL = pass-through */
+    ph_before_send_fn before_send; /* scrubber; NULL = pass-through */
     ph_log_fn on_log;              /* diagnostics sink; NULL = silent */
     void *user_data;               /* passed to before_send / on_log */
 
@@ -190,7 +190,7 @@ typedef struct ph_config {
                              * second (burst == this value); <= 0 = unlimited.
                              * Stops a runaway loop from flooding ingestion. */
     const char *const *property_denylist; /* keys stripped from every event
-                                           * before send (§10); NULL = none */
+                                           * before send; NULL = none */
     int property_denylist_count;          /* number of keys in property_denylist */
 
     int crash_handler; /* install the in-process signal_crash handler (POSIX
@@ -208,7 +208,7 @@ typedef struct ph_config {
  */
 void ph_config_defaults(ph_config *cfg);
 
-/* --- Exceptions / error tracking (§8) --------------------------------
+/* --- Exceptions / error tracking --------------------------------
  *
  * "Exception" is PostHog's word for an Error Tracking event ($exception); it
  * has nothing to do with C++ throw/catch and works under -fno-exceptions.
@@ -234,7 +234,7 @@ typedef struct ph_exception {
     const ph_props *extra; /* optional extra properties */
 } ph_exception;
 
-/* --- Lifecycle & capture (§2) ----------------------------------------- */
+/* --- Lifecycle & capture ----------------------------------------- */
 
 /*
  * Initialize the global SDK instance. Copies config, generates or adopts the
@@ -247,7 +247,7 @@ ph_result ph_init(const ph_config *cfg);
 /*
  * Capture an event. Fire-and-forget: copies the event name and accepted
  * property values into the SDK-owned ring and returns. No JSON, no network,
- * no malloc on the caller thread (§1). `props` may be NULL for a bare event.
+ * no malloc on the caller thread. `props` may be NULL for a bare event.
  * Oversized keys/values are truncated; over-capacity events drop properties
  * and bump an internal counter rather than borrowing caller memory.
  */
@@ -275,14 +275,14 @@ void ph_register(const ph_props *super_props);
 /* Drop one super property by key. */
 void ph_unregister(const char *key);
 
-/* Report a structured error as a $exception event (§8). This is the
+/* Report a structured error as a $exception event. This is the
  * app-reported ("posthog_exception") path — you caught something and want it
  * tracked. It is NOT a crash handler: for fatal native crashes, set
  * cfg.crash_handler (the signal_crash handler routes through here on the next
  * launch). */
 void ph_capture_exception(const ph_exception *ex);
 
-/* --- Feature flags (§9) ----------------------------------------------
+/* --- Feature flags ----------------------------------------------
  *
  * Remote evaluation (POST /flags/), read from a local cache. `preload_flags`
  * fetches during ph_init; the SDK re-fetches after ph_identify, and
