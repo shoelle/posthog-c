@@ -398,6 +398,57 @@ int ph__http_send_response_complete(const char *resp, size_t resp_len) {
     return body_have >= PH_RESP_BODY_CAP - 1 || body_have > 0;
 }
 
+/* Response-buffer sizes: the status-only path needs room for the status line,
+ * headers, and the small quota-notice prefix; the body path reads in chunks. */
+#define PH_HTTP_STATUS_BUF 4096
+#define PH_HTTP_FETCH_CHUNK 2048
+
+/* Read a small status-only response: status line + headers (Retry-After) + the
+ * body prefix carrying a quota notice. Stops at Content-Length, a complete
+ * chunked body, or the buffer cap. Returns the HTTP status, or -1. */
+static int read_status_response(ph_socket s, ph_send_meta *meta) {
+    char resp[PH_HTTP_STATUS_BUF];
+    size_t total = 0;
+    for (;;) {
+        int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
+        if (n <= 0) break;
+        total += (size_t)n;
+        resp[total] = '\0';
+        if (ph__http_send_response_complete(resp, total)) break;
+        if (total >= sizeof(resp) - 1) break;
+    }
+    return total > 0 ? ph__http_parse_response_meta(resp, total, meta) : -1;
+}
+
+/* Read the whole response, parse the status, and copy the body (past the
+ * "\r\n\r\n" terminator) into out (NUL-terminated, capped) - used for /flags/.
+ * Returns the HTTP status, or -1. */
+static int read_body_response(ph_socket s, char *out, size_t out_cap) {
+    ph_strbuf resp;
+    int status = -1;
+    ph_strbuf_init(&resp);
+    for (;;) {
+        char chunk[PH_HTTP_FETCH_CHUNK];
+        int n = (int)recv(s, chunk, (int)sizeof(chunk), 0);
+        if (n <= 0) break;
+        ph_strbuf_append(&resp, chunk, (size_t)n);
+        if (resp.oom) break;
+    }
+    if (resp.data) {
+        const char *sep = strstr(resp.data, "\r\n\r\n");
+        status = parse_status(resp.data, resp.len);
+        if (sep && out_cap > 0) {
+            const char *b = sep + 4;
+            size_t blen = resp.len - (size_t)(b - resp.data);
+            size_t copy = blen < out_cap - 1 ? blen : out_cap - 1;
+            memcpy(out, b, copy);
+            out[copy] = '\0';
+        }
+    }
+    ph_strbuf_free(&resp);
+    return status;
+}
+
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
  * terminator) is copied into it (NUL-terminated, capped) - used for /flags/;
  * otherwise only the status line is read (the capture path discards the body).
@@ -465,48 +516,8 @@ static int do_http(const char *url, const char *body, size_t body_len,
         sent += (size_t)n;
     }
 
-    if (!out) {
-        /* Read the (small) response: status line, headers including any
-         * Retry-After, and the body prefix carrying a quota-limit notice.
-         * Stop at Content-Length, a complete chunked body, or the prefix cap. */
-        char resp[4096];
-        size_t total = 0;
-        for (;;) {
-            int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
-            if (n <= 0) break;
-            total += (size_t)n;
-            resp[total] = '\0';
-            if (ph__http_send_response_complete(resp, total)) break;
-            if (total >= sizeof(resp) - 1) break;
-        }
-        if (total > 0) {
-            status = ph__http_parse_response_meta(resp, total, meta);
-        }
-    } else {
-        /* Read the whole response, parse the status, copy the body past the
-         * "\r\n\r\n" header terminator. */
-        ph_strbuf resp;
-        ph_strbuf_init(&resp);
-        for (;;) {
-            char chunk[2048];
-            int n = (int)recv(s, chunk, (int)sizeof(chunk), 0);
-            if (n <= 0) break;
-            ph_strbuf_append(&resp, chunk, (size_t)n);
-            if (resp.oom) break;
-        }
-        if (resp.data) {
-            const char *sep = strstr(resp.data, "\r\n\r\n");
-            status = parse_status(resp.data, resp.len);
-            if (sep && out_cap > 0) {
-                const char *b = sep + 4;
-                size_t blen = resp.len - (size_t)(b - resp.data);
-                size_t copy = blen < out_cap - 1 ? blen : out_cap - 1;
-                memcpy(out, b, copy);
-                out[copy] = '\0';
-            }
-        }
-        ph_strbuf_free(&resp);
-    }
+    status = out ? read_body_response(s, out, out_cap)
+                 : read_status_response(s, meta);
 
     sock_close(s);
     ph_strbuf_free(&req);
