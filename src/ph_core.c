@@ -201,6 +201,37 @@ void ph_shutdown(void) {
 
 /* --- the shared enqueue path ------------------------------------------ */
 
+/* Token-bucket admission for product/exception events (control events are never
+ * limited). Refills from the monotonic tick the caller already read, so the hot
+ * path stays wall-clock/RNG-free. Caller holds g_ph.lock. Returns 0 if the event
+ * should be dropped (bucket empty), else 1 (a token was consumed). */
+static int rate_limit_admit(int kind, uint64_t mono) {
+    uint64_t d;
+    if (g_ph.rl_rate <= 0.0 ||
+        (kind != PH_EV_CAPTURE && kind != PH_EV_EXCEPTION))
+        return 1; /* unlimited, or a rare control event */
+    d = mono >= g_ph.rl_last_mono ? mono - g_ph.rl_last_mono : 0;
+    g_ph.rl_last_mono = mono;
+    g_ph.rl_tokens += ((double)d / 1e9) * g_ph.rl_rate;
+    if (g_ph.rl_tokens > g_ph.rl_burst) g_ph.rl_tokens = g_ph.rl_burst;
+    if (g_ph.rl_tokens < 1.0) {
+        g_ph.rl_dropped++;
+        return 0;
+    }
+    g_ph.rl_tokens -= 1.0;
+    return 1;
+}
+
+/* Resolve whether this event suppresses its person profile: profile_mode 1
+ * forces anonymous, 0 forces a profile, -1 derives from the configured policy
+ * and current identity. Caller holds g_ph.lock. */
+static int derive_no_profile(int profile_mode) {
+    if (profile_mode == 1) return 1;
+    if (profile_mode == 0) return 0;
+    return (g_ph.person_profiles == PH_NEVER) ||
+           (g_ph.person_profiles == PH_IDENTIFIED_ONLY && !g_ph.identified);
+}
+
 /* profile_mode: -1 derive from policy, 0 force profile, 1 force anonymous.
  * `extra`/`extra_len`: optional pre-packed entries (e.g. the $exception_list
  * rawjson) appended after props/super/groups; pass NULL/0 when unused. */
@@ -222,20 +253,10 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
             (did_override && did_override[0]) ? did_override : g_ph.distinct_id;
         size_t cap = PH_EVENT_DATA_CAP;
 
-        /* Rate limit product + exception events (not rare control events).
-         * Refills from the monotonic tick we already read - no wall clock. */
-        if (g_ph.rl_rate > 0.0 &&
-            (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION)) {
-            uint64_t d = mono >= g_ph.rl_last_mono ? mono - g_ph.rl_last_mono : 0;
-            g_ph.rl_last_mono = mono;
-            g_ph.rl_tokens += ((double)d / 1e9) * g_ph.rl_rate;
-            if (g_ph.rl_tokens > g_ph.rl_burst) g_ph.rl_tokens = g_ph.rl_burst;
-            if (g_ph.rl_tokens < 1.0) {
-                g_ph.rl_dropped++;
-                ph_mutex_unlock(&g_ph.lock);
-                return;
-            }
-            g_ph.rl_tokens -= 1.0;
+        /* Token-bucket admission (product/exception events only). */
+        if (!rate_limit_admit(kind, mono)) {
+            ph_mutex_unlock(&g_ph.lock);
+            return;
         }
         size_t name_len = strlen(name);
         size_t did_len = strlen(did);
@@ -243,14 +264,7 @@ static void submit_event(int kind, unsigned char base_flags, const char *name,
         int no_profile;
         ph_event *e;
 
-        if (profile_mode == 1)
-            no_profile = 1;
-        else if (profile_mode == 0)
-            no_profile = 0;
-        else
-            no_profile = (g_ph.person_profiles == PH_NEVER) ||
-                         (g_ph.person_profiles == PH_IDENTIFIED_ONLY &&
-                          !g_ph.identified);
+        no_profile = derive_no_profile(profile_mode);
 
         if (name_len > cap) name_len = cap;
         if (did_len > cap - name_len) did_len = cap - name_len;
