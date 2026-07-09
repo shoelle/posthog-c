@@ -31,11 +31,11 @@ extern "C" {
 /* --- Version ---------------------------------------------------------- */
 
 #define PH_VERSION_MAJOR 0
-#define PH_VERSION_MINOR 1
+#define PH_VERSION_MINOR 7
 #define PH_VERSION_PATCH 0
-#define PH_VERSION_STRING "0.1.0"
+#define PH_VERSION_STRING "0.7.0"
 
-/* Returns the compiled-in library version, e.g. "0.1.0". */
+/* Returns the compiled-in library version, e.g. "0.7.0". */
 const char *ph_version(void);
 
 /* --- Compile-time capacities -----------------------------------------

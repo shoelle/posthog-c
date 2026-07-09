@@ -1,6 +1,6 @@
 .{
     .name = .posthog_c,
-    .version = "0.1.0",
+    .version = "0.7.0",
     .fingerprint = 0x3c55970878db34a5,
     .minimum_zig_version = "0.15.0",
     .dependencies = .{},

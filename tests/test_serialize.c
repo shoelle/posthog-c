@@ -58,7 +58,7 @@ void suite_serialize(void) {
     CHECK_CONTAINS(out.data, "\"event\":\"level_started\"");
     CHECK_CONTAINS(out.data, "\"distinct_id\":\"user-1\""); /* inside properties */
     CHECK_CONTAINS(out.data, "\"$lib\":\"posthog-c\"");
-    CHECK_CONTAINS(out.data, "\"$lib_version\":\"0.1.0\"");
+    CHECK_CONTAINS(out.data, "\"$lib_version\":\"0.7.0\"");
     CHECK_CONTAINS(out.data, "\"$lib_backend\":\"native\"");
     CHECK_CONTAINS(out.data, "\"$os\":");
     CHECK_CONTAINS(out.data, "\"weapon\":\"sword\"");

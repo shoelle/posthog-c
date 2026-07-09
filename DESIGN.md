@@ -99,7 +99,7 @@ customer's own integration reference:
     "uuid": "019f390a-436b-7b6e-94a2-2b19a09d01a9",
     "properties": {
       "distinct_id": "…",            // NOTE: inside properties for batch items
-      "$lib": "posthog-c", "$lib_version": "0.1.0", "$lib_backend": "native",
+      "$lib": "posthog-c", "$lib_version": "0.7.0", "$lib_backend": "native",
       "$os": "Windows", "arch": "x86_64", "release": "myapp@1.2.3",
       "$process_person_profile": false,
       "weapon": "sword", "level": 3
