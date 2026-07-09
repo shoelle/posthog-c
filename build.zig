@@ -185,6 +185,38 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Build and run the test suite");
     test_step.dependOn(&run_tests.step);
 
+    // -- Fuzz targets: `zig build fuzz` ----------------------------------
+    // Portable mutation harnesses over the two parsers that consume
+    // network-controlled bytes: the /flags/ JSON parser and the HTTP response
+    // parser. The targets use the libFuzzer entry point, so a coverage-guided
+    // libFuzzer build (Linux) can drive them unchanged; here a built-in driver
+    // (tests/fuzz/fuzz_run.c) mutates seed corpora. No sanitizer needed to catch
+    // faults/hangs (that's how the JSON depth-cap bug was found).
+    const fuzz_step = b.step("fuzz", "Build and run the parser fuzz targets");
+    {
+        const fuzz_srcs = [_][]const u8{ "tests/fuzz/fuzz_jsonval.c", "tests/fuzz/fuzz_http.c" };
+        const fuzz_names = [_][]const u8{ "fuzz_jsonval", "fuzz_http" };
+        for (fuzz_srcs, fuzz_names) |src, name| {
+            const fz = b.addExecutable(.{
+                .name = name,
+                .root_module = b.createModule(.{
+                    .target = target,
+                    .optimize = optimize,
+                    .link_libc = true,
+                }),
+            });
+            fz.addIncludePath(b.path("include"));
+            fz.addIncludePath(b.path("src"));
+            fz.addIncludePath(b.path("tests/fuzz"));
+            fz.addCSourceFiles(.{ .files = &.{ "tests/fuzz/fuzz_run.c", src }, .flags = &c_flags });
+            fz.linkLibrary(lib);
+            linkPlatform(fz, target);
+            const run_fz = b.addRunArtifact(fz);
+            run_fz.addArg("50000"); // bounded iterations for a repeatable check
+            fuzz_step.dependOn(&run_fz.step);
+        }
+    }
+
     // -- C example: `zig build run-example` ------------------------------
     const example = b.addExecutable(.{
         .name = "quickstart",

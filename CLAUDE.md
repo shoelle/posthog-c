@@ -98,6 +98,7 @@ sides if a change risks them:
 zig build              # static lib + headers + examples
 zig build test         # native headless suite (must be green before finishing)
 zig build test-wasm    # WASM backend via emcc + Node parity harness (needs emsdk)
+zig build fuzz         # mutation-fuzz the /flags/ JSON + HTTP response parsers
 zig build run-example  # C quickstart against a dev proxy
 ```
 

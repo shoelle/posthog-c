@@ -84,6 +84,7 @@ no separate toolchain is needed). Zig is the one build entry point.
 zig build              # static lib (zig-out/lib) + headers + examples
 zig build test         # build and run the native test suite
 zig build test-wasm    # build the WASM backend (emcc) + run the Node parity harness
+zig build fuzz         # fuzz the two network-facing parsers (JSON + HTTP)
 zig build run-example  # run the C quickstart
 ```
 
