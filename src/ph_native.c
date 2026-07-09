@@ -160,6 +160,13 @@ static void offline_spill(const char *body, size_t len) {
     fclose(f);
 }
 
+/* A deterministic client error - a 4xx other than 429 backpressure. Retrying or
+ * persisting it just fails again forever, so drop it rather than spill/keep and
+ * block the queue behind it. */
+static int is_permanent_reject(int status) {
+    return status >= 400 && status < 500 && status != 429;
+}
+
 /* Replay spilled batches oldest-first. A 2xx is accepted and dropped from the
  * spill - a quota_limited 200 still accepted the request (its events were
  * server-dropped), so re-sending won't recover them, matching how send_batch
@@ -206,6 +213,10 @@ static void offline_replay(void) {
                     keep_line = 0; /* accepted (even a quota 200) - drop it */
                     if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()))
                         stopped = 1; /* ...but hold the untried remainder */
+                } else if (is_permanent_reject(status)) {
+                    keep_line = 0; /* client error - drop, don't block the queue */
+                    ph_log(PH_LOG_WARN,
+                           "offline: dropping batch rejected with status %d", status);
                 } else {
                     keep_line = 1; /* transient failure - keep and stop */
                     stopped = 1;
@@ -432,7 +443,12 @@ static void send_batch(ph_event *evs, int n) {
         if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break; /* backpressure */
     }
     if (status < 200 || status >= 300) {
-        if (g_ph.offline_path[0]) {
+        if (is_permanent_reject(status)) {
+            /* Deterministic client error (bad key/body): spilling would just
+             * re-POST and fail on every drain, blocking the queue. Drop it. */
+            ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
+                                "(client error, will not retry)", status, n);
+        } else if (g_ph.offline_path[0]) {
             offline_spill(body.data ? body.data : "", body.len);
             ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
         } else {

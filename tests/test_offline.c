@@ -137,6 +137,32 @@ void suite_offline(void) {
               "spill file must drain once the torn tail is dropped");
     if (content) free(content);
 
+    /* --- permanent client error: a 4xx other than 429 is a deterministic
+     * reject. A live batch that gets a 400 is dropped, not spilled - spilling
+     * would just re-POST and fail on every drain, blocking the queue. --- */
+    mock_reset();
+    mock_set_status(400);
+    ph_capture("client_err_ev", NULL);
+    ph_flush(2000);
+    CHECK_MSG(mock_batch_count() == 1, "a 4xx must not be retried");
+    content = read_file(path, &clen);
+    CHECK_MSG(content == NULL || clen == 0, "a 4xx batch must be dropped, not spilled");
+    if (content) free(content);
+
+    /* --- 4xx on replay: each rejected record is dropped and replay continues
+     * to the next, rather than keeping the poison line and stopping (which
+     * blocked everything queued behind it). --- */
+    mock_reset();
+    mock_set_status(400);
+    write_file(path, "{\"batch\":\"poison_a\"}\n{\"batch\":\"poison_b\"}\n");
+    ph_flush(2000);
+    CHECK_MSG(any_batch_contains("poison_a") && any_batch_contains("poison_b"),
+              "replay must continue past a 4xx-rejected record, not stop on it");
+    content = read_file(path, &clen);
+    CHECK_MSG(content == NULL || clen == 0,
+              "4xx-rejected spill records must be dropped, not retained");
+    if (content) free(content);
+
     ph_shutdown();
     remove(path);
 }
