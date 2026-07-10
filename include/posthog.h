@@ -181,7 +181,8 @@ typedef void (*ph_stats_fn)(const char *json, size_t len, void *user);
  * String fields are copied by ph_init(); you keep ownership of your buffers.
  */
 typedef struct ph_config {
-    const char *api_key;   /* phc_... project (write-only) key */
+    const char *api_key;   /* project API key ("Project token" in the dashboard),
+                            * phc_...; write-only, not a personal phx_ key */
     const char *api_host;  /* "https://us.i.posthog.com" or your /ingest proxy */
     const char *distinct_id; /* anonymous install id; replace via ph_identify */
 
