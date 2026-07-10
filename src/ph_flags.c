@@ -49,7 +49,9 @@ static void flags_ingest_for_context(const char *json, size_t len,
                                      uint64_t context_gen) {
     ph_jv *root = ph_jv_parse(json, len);
     const ph_jv *flags;
-    ph_flag parsed[PH_MAX_FLAGS];
+    ph_flag *parsed; /* PH_MAX_FLAGS entries on the heap, not ~40 KB of caller
+                      * stack - this runs inline on ph_reload_feature_flags()'s
+                      * thread, which may have a small stack. */
     int parsed_count = 0;
     int partial, i;
     if (!root) return;
@@ -60,6 +62,11 @@ static void flags_ingest_for_context(const char *json, size_t len,
     }
     flags = ph_jv_get(root, "flags");
     if (ph_jv_type_of(flags) != PH_JV_OBJ) {
+        ph_jv_free(root);
+        return;
+    }
+    parsed = malloc(sizeof(*parsed) * PH_MAX_FLAGS);
+    if (!parsed) {
         ph_jv_free(root);
         return;
     }
@@ -90,22 +97,28 @@ static void flags_ingest_for_context(const char *json, size_t len,
     ph_mutex_lock(&g_ph.lock);
     if (context_gen != g_ph.flags_context_gen) {
         ph_mutex_unlock(&g_ph.lock);
+        free(parsed);
         ph_jv_free(root);
         return;
     }
 
     if (!partial) {
-        ph_flag next[PH_MAX_FLAGS];
-        int next_count = parsed_count;
+        /* Preserve the $feature_flag_called latch only where the value is
+         * unchanged. Decide that first (find_locked reads the live cache), then
+         * overwrite in place - no second PH_MAX_FLAGS-sized stack copy. */
+        unsigned char keep_called[PH_MAX_FLAGS];
         for (i = 0; i < parsed_count; i++) {
             ph_flag *old = find_locked(parsed[i].key);
-            next[i] = parsed[i];
-            if (old && old->called_sent && flag_value_same(old, &parsed[i]))
-                next[i].called_sent = 1;
+            keep_called[i] = (old && old->called_sent &&
+                              flag_value_same(old, &parsed[i]))
+                                 ? 1
+                                 : 0;
         }
-        if (next_count > 0)
-            memcpy(g_ph.flags, next, (size_t)next_count * sizeof(next[0]));
-        g_ph.flag_count = next_count;
+        for (i = 0; i < parsed_count; i++) {
+            g_ph.flags[i] = parsed[i];
+            g_ph.flags[i].called_sent = keep_called[i];
+        }
+        g_ph.flag_count = parsed_count;
     } else {
         /* PostHog marks partial responses so SDKs retain flags that were not
          * recomputed. Replace only the entries explicitly returned. */
@@ -121,6 +134,7 @@ static void flags_ingest_for_context(const char *json, size_t len,
         }
     }
     ph_mutex_unlock(&g_ph.lock);
+    free(parsed);
     ph_jv_free(root);
 }
 
