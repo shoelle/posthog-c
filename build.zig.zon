@@ -15,9 +15,6 @@
         "README.md",
         "DESIGN.md",
         "TODO.md",
-        "SECURITY.md",
-        "CONTRIBUTING.md",
-        "CHANGELOG.md",
         "LICENSE",
     },
 }

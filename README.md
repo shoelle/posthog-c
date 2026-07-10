@@ -4,16 +4,16 @@ This is an **unofficial** small, embeddable **PostHog SDK** for C and C++.
 
 > **Status:** pre-1.0, lightly tested on Windows.
 
-**What it's for.** Native apps that can't take a telemetry stall on a hot thread - game engines, audio and creative tools, desktop and embedded software. `ph_capture()` copies your event into a fixed-size ring and returns; on the calling thread it never allocates, reads the wall clock, uses RNG, or touches the network. Serialization, gzip, HTTP, and retries all run on a background sender thread. That guarantee is the reason this exists instead of a few lines of `curl` against PostHog's HTTP API.
+**What it's for:** Native apps that can't take a telemetry stall on a hot thread - game engines, audio and creative tools, desktop and embedded software. `ph_capture()` copies your event into a fixed-size ring and returns; on the calling thread it never allocates, reads the wall clock, uses RNG, or touches the network. Serialization, gzip, HTTP, and retries all run on a background sender thread. That guarantee is the reason this exists instead of a few lines of `curl` against PostHog's HTTP API.
 
-This is a source-distributed SDK: compile it and its headers with your application. No prebuilt binaries or cross-release source/binary compatibility are promised while the project remains unofficial and 0.x.
+This is a source-distributed SDK: compile it and its headers with your application. No prebuilt binaries or cross-release source/binary compatibility are planned.
 
 ## Highlights
 
 - **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a thin shim over the browser's already-loaded `window.posthog`.
 - **Native has no SDK dependency.** It follows PostHog's raw HTTP endpoints; WASM deliberately delegates to the page's already-loaded posthog-js.
 - **Native hot-path-safe capture.** `ph_capture()` copies into a bounded ring and returns; JSON, networking, allocation, wall-clock reads, and RNG happen on the worker. WASM calls posthog-js and `before_send` synchronously, so this guarantee is native-only.
-- **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a property denylist, and a master kill-switch (see "Privacy & reliability" in [DESIGN.md](DESIGN.md)).
+- **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a property denylist, and a master kill-switch (see [DESIGN.md](DESIGN.md)).
 
 ## Quick start (C)
 
@@ -91,8 +91,7 @@ zig build run-example  # run the C quickstart
 
 `zig build live-contract` is intentionally separate and requires
 `POSTHOG_API_KEY`; maintainers run it against a disposable project before a
-release. Optional flag/payload expectations are documented in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+release.
 
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
 
@@ -121,13 +120,7 @@ process that will emit events; do not call the inherited instance in the child.
 
 ## Roadmap
 
-TODO: Linux/macOS TLS. See [TODO.md](TODO.md) for more.
-
-## Project policy
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release checks,
-[SECURITY.md](SECURITY.md) for private vulnerability reporting and supported
-versions, and [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
+TODO: Linux/macOS support. See [TODO.md](TODO.md) for more.
 
 ## License
 
