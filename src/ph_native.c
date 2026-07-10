@@ -500,13 +500,21 @@ static int sender_backoff_wait(int ms) {
 
 static void persist_run(ph_event *evs, int n);
 
-/* Capture records only a suspend-aware monotonic tick. Before shaping a batch,
- * recalibrate the init-time wall mapping when NTP/manual clock changes create a
- * material skew. This stays entirely on the sender thread. */
+/* Capture records only a suspend-aware monotonic tick; wall time is
+ * reconstructed here at drain from the init-time (wall, mono) anchor. A clock
+ * that is wrong at startup (a dead RTC on an embedded box) is typically fixed by
+ * NTP within seconds of launch, so re-anchor only during a short grace window
+ * after init. After that the anchor is frozen: a mid-session NTP or manual clock
+ * step must never retroactively shift the timestamps of events captured -
+ * possibly hours earlier, while offline - under the correct mapping, which is
+ * exactly the "a queued event reports when it happened" guarantee. Sender thread
+ * only. */
 static void refresh_clock_epoch(void) {
-    const uint64_t threshold_ns = 1000000000ull;
+    const uint64_t threshold_ns = 1000000000ull;     /* ignore <1s slew */
+    const uint64_t grace_ns = 60ull * 1000000000ull; /* re-anchor window */
     uint64_t mono = ph_now_mono_ns();
     uint64_t wall = ph_now_wall_ns();
+    if (mono < g_ph.epoch_mono_ns || mono - g_ph.epoch_mono_ns > grace_ns) return;
     g_ph.epoch_wall_ns = ph_correct_wall_epoch(
         g_ph.epoch_wall_ns, g_ph.epoch_mono_ns, wall, mono, threshold_ns);
 }
