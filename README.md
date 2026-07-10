@@ -79,7 +79,7 @@ to each backend's delivery owner and are not byte-for-byte equivalent.
 
 ## Build
 
-Requires [Zig](https://ziglang.org) 0.15.2.
+Requires [Zig](https://ziglang.org) 0.16.0.
 
 ```sh
 zig build              # static lib (zig-out/lib) + headers + examples

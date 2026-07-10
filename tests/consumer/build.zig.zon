@@ -2,7 +2,7 @@
     .name = .posthog_consumer_smoke,
     .version = "0.0.0",
     .fingerprint = 0x953a8a944f8b22e0,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .posthog_c = .{ .path = "../.." },
     },

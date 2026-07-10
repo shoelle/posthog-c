@@ -12,9 +12,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    exe.addCSourceFile(.{ .file = b.path("main.c"), .flags = &.{"-std=c11"} });
-    exe.addIncludePath(ph.path("include"));
-    exe.linkLibrary(ph.artifact("posthog"));
+    exe.root_module.addCSourceFile(.{ .file = b.path("main.c"), .flags = &.{"-std=c11"} });
+    exe.root_module.addIncludePath(ph.path("include"));
+    exe.root_module.linkLibrary(ph.artifact("posthog"));
     const run = b.addRunArtifact(exe);
     b.step("run", "Build, link, and run the downstream package smoke test")
         .dependOn(&run.step);

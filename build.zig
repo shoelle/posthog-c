@@ -49,21 +49,22 @@ const test_sources = [_][]const u8{
 };
 
 fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+    const m = step.root_module;
     switch (target.result.os.tag) {
         .windows => {
-            step.linkSystemLibrary("ws2_32"); // Winsock (plaintext HTTP transport)
-            step.linkSystemLibrary("winhttp"); // HTTPS transport (ph_tls.c)
-            step.linkSystemLibrary("bcrypt"); // OS entropy for UUID/reset-id salt
+            m.linkSystemLibrary("ws2_32", .{}); // Winsock (plaintext HTTP transport)
+            m.linkSystemLibrary("winhttp", .{}); // HTTPS transport (ph_tls.c)
+            m.linkSystemLibrary("bcrypt", .{}); // OS entropy for UUID/reset-id salt
         },
         // Linux: dl for dladdr (signal_crash module lookup); pthread for the
         // sender thread. glibc backtrace() lives in libc.
         .linux => {
-            step.linkSystemLibrary("pthread");
-            step.linkSystemLibrary("dl");
+            m.linkSystemLibrary("pthread", .{});
+            m.linkSystemLibrary("dl", .{});
         },
         // macOS et al.: dladdr/backtrace are in libSystem; pthread is part of
         // libc, but requesting it explicitly is harmless and correct.
-        else => step.linkSystemLibrary("pthread"),
+        else => m.linkSystemLibrary("pthread", .{}),
     }
 }
 
@@ -87,20 +88,19 @@ fn findEmcc(b: *std.Build) ?[]const u8 {
     const home_env: []const u8 = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
     var extra: [2][]const u8 = undefined;
     var n: usize = 0;
-    if (std.process.getEnvVarOwned(b.allocator, "EMSDK")) |emsdk| {
+    if (b.graph.environ_map.get("EMSDK")) |emsdk| {
         extra[n] = std.fs.path.join(b.allocator, &.{ emsdk, "upstream", "emscripten" }) catch return null;
         n += 1;
-    } else |_| {}
-    if (std.process.getEnvVarOwned(b.allocator, home_env)) |home| {
+    }
+    if (b.graph.environ_map.get(home_env)) |home| {
         extra[n] = std.fs.path.join(b.allocator, &.{ home, "emsdk", "upstream", "emscripten" }) catch return null;
         n += 1;
-    } else |_| {}
+    }
     return b.findProgram(&.{emcc_name}, extra[0..n]) catch null;
 }
 
 /// Locate node for the WASM behavioral harness: emsdk's EMSDK_NODE (the exact
-/// bundled binary), then PATH, then the version-stamped directory emsdk bundles
-/// (<emsdk>/node/<ver>/bin/node).
+/// bundled binary) first, then PATH.
 fn findNode(b: *std.Build) ?[]const u8 {
     const node_name: []const u8 = if (builtin.os.tag == .windows) "node.exe" else "node";
 
@@ -109,37 +109,11 @@ fn findNode(b: *std.Build) ?[]const u8 {
     // that setup-emsdk leaves on $PATH. (A statFile guard here would be nicer,
     // but it drags __availability_version_check into the macOS build runner and
     // breaks its libSystem link.)
-    if (std.process.getEnvVarOwned(b.allocator, "EMSDK_NODE")) |n| {
+    if (b.graph.environ_map.get("EMSDK_NODE")) |n| {
         return n;
-    } else |_| {}
-
-    if (b.findProgram(&.{node_name}, &.{})) |p| {
-        return p;
-    } else |_| {}
-
-    const home_env: []const u8 = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
-    var root: ?[]const u8 = null;
-    if (std.process.getEnvVarOwned(b.allocator, "EMSDK")) |e| {
-        root = e;
-    } else |_| {}
-    if (root == null) {
-        if (std.process.getEnvVarOwned(b.allocator, home_env)) |home| {
-            root = std.fs.path.join(b.allocator, &.{ home, "emsdk" }) catch null;
-        } else |_| {}
     }
-    if (root) |r| {
-        const node_dir = std.fs.path.join(b.allocator, &.{ r, "node" }) catch return null;
-        var dir = std.fs.cwd().openDir(node_dir, .{ .iterate = true }) catch return null;
-        defer dir.close();
-        var it = dir.iterate();
-        while (it.next() catch null) |entry| {
-            if (entry.kind != .directory) continue;
-            const cand = std.fs.path.join(b.allocator, &.{ node_dir, entry.name, "bin", node_name }) catch continue;
-            std.fs.cwd().access(cand, .{}) catch continue;
-            return cand;
-        }
-    }
-    return null;
+
+    return b.findProgram(&.{node_name}, &.{}) catch null;
 }
 
 // Internal factory used by build() below. External projects should NOT call this
@@ -159,18 +133,18 @@ fn create(
             .link_libc = true,
         }),
     });
-    lib.addIncludePath(b.path("include"));
-    lib.addIncludePath(b.path("src"));
-    lib.addIncludePath(b.path("third_party/sdefl"));
-    lib.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
-    lib.addCSourceFiles(.{ .files = &.{"src/ph_gzip.c"}, .flags = &gzip_flags });
+    lib.root_module.addIncludePath(b.path("include"));
+    lib.root_module.addIncludePath(b.path("src"));
+    lib.root_module.addIncludePath(b.path("third_party/sdefl"));
+    lib.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
+    lib.root_module.addCSourceFiles(.{ .files = &.{"src/ph_gzip.c"}, .flags = &gzip_flags });
     linkPlatform(lib, target);
     return lib;
 }
 
 // Add the public include path (in-repo helper; see the note on create()).
 fn addIncludes(b: *std.Build, step: *std.Build.Step.Compile) void {
-    step.addIncludePath(b.path("include"));
+    step.root_module.addIncludePath(b.path("include"));
 }
 
 pub fn build(b: *std.Build) void {
@@ -191,10 +165,10 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    tests.addIncludePath(b.path("include"));
-    tests.addIncludePath(b.path("src"));
-    tests.addCSourceFiles(.{ .files = &test_sources, .flags = &c_flags });
-    tests.linkLibrary(lib);
+    tests.root_module.addIncludePath(b.path("include"));
+    tests.root_module.addIncludePath(b.path("src"));
+    tests.root_module.addCSourceFiles(.{ .files = &test_sources, .flags = &c_flags });
+    tests.root_module.linkLibrary(lib);
     linkPlatform(tests, target);
 
     const run_tests = b.addRunArtifact(tests);
@@ -221,11 +195,11 @@ pub fn build(b: *std.Build) void {
                     .link_libc = true,
                 }),
             });
-            fz.addIncludePath(b.path("include"));
-            fz.addIncludePath(b.path("src"));
-            fz.addIncludePath(b.path("tests/fuzz"));
-            fz.addCSourceFiles(.{ .files = &.{ "tests/fuzz/fuzz_run.c", src }, .flags = &c_flags });
-            fz.linkLibrary(lib);
+            fz.root_module.addIncludePath(b.path("include"));
+            fz.root_module.addIncludePath(b.path("src"));
+            fz.root_module.addIncludePath(b.path("tests/fuzz"));
+            fz.root_module.addCSourceFiles(.{ .files = &.{ "tests/fuzz/fuzz_run.c", src }, .flags = &c_flags });
+            fz.root_module.linkLibrary(lib);
             linkPlatform(fz, target);
             const run_fz = b.addRunArtifact(fz);
             run_fz.addArg("50000"); // bounded iterations for a repeatable check
@@ -243,8 +217,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addIncludes(b, example);
-    example.addCSourceFiles(.{ .files = &.{"examples/quickstart.c"}, .flags = &c_flags });
-    example.linkLibrary(lib);
+    example.root_module.addCSourceFiles(.{ .files = &.{"examples/quickstart.c"}, .flags = &c_flags });
+    example.root_module.linkLibrary(lib);
     linkPlatform(example, target);
     b.installArtifact(example);
 
@@ -263,8 +237,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addIncludes(b, example_cpp);
-    example_cpp.addCSourceFiles(.{ .files = &.{"examples/quickstart.cpp"}, .flags = &.{ "-std=c++17", "-Wall", "-Wextra" } });
-    example_cpp.linkLibrary(lib);
+    example_cpp.root_module.addCSourceFiles(.{ .files = &.{"examples/quickstart.cpp"}, .flags = &.{ "-std=c++17", "-Wall", "-Wextra" } });
+    example_cpp.root_module.linkLibrary(lib);
     linkPlatform(example_cpp, target);
     b.installArtifact(example_cpp);
 
@@ -281,8 +255,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addIncludes(b, live);
-    live.addCSourceFiles(.{ .files = &.{"tests/live_contract.c"}, .flags = &c_flags });
-    live.linkLibrary(lib);
+    live.root_module.addCSourceFiles(.{ .files = &.{"tests/live_contract.c"}, .flags = &c_flags });
+    live.root_module.linkLibrary(lib);
     linkPlatform(live, target);
     b.step("live-contract-compile", "Compile the opt-in live PostHog contract test")
         .dependOn(&live.step);
