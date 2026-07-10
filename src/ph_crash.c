@@ -3,11 +3,12 @@
  *
  * Two worlds live here, kept strictly apart:
  *   - the handler (posix_handler / win_filter): runs in a dying process, so it
- *     stays lean and allocation-free - it snapshots the stack as (module,
+ *     stays lean with no explicit SDK allocation - it snapshots the stack as (module,
  *     offset) pairs into a static record and write()s it. The one concession is
  *     a loader query per frame (dladdr / GetModuleHandleEx) to find each
- *     module's base; that takes the loader lock, so a crash *inside* the loader
- *     could stall. That's the known limit of in-process capture and exactly why
+ *     module's base. backtrace/dladdr are not async-signal-safe and may allocate
+ *     or take the loader lock, so heap/loader crashes can stall. That's the
+ *     known limit of in-process capture and exactly why
  *     robust capture is out-of-process (minidump_crash); acceptable here.
  *   - everything else (replay): runs in normal context on the next launch and
  *     reuses the posthog_exception path (ph_capture_exception) rather than
@@ -31,7 +32,7 @@ static void crash_ensure_dir(const char *dir) {
 #include <sys/stat.h>
 #include <sys/types.h>
 static void crash_ensure_dir(const char *dir) {
-    if (dir && dir[0]) mkdir(dir, 0777);
+    if (dir && dir[0]) mkdir(dir, 0700);
 }
 #endif
 
@@ -338,11 +339,19 @@ int ph_signal_crash_replay(const char *dir) {
     ex.frames = frames;
     ex.frame_count = nf;
     ex.extra = &extra;
-    ph_capture_exception(&ex);
+    if (ph__capture_exception_flags(&ex, PH_EVF_CRASH_REPLAY) != PH_OK)
+        return 0;
 
-    remove(path);
-    ph_log(PH_LOG_WARN, "signal_crash: replayed a %s from a previous run", name);
+    ph_log(PH_LOG_WARN, "signal_crash: queued a %s from a previous run", name);
     return 1;
+}
+
+void ph_signal_crash_handoff_complete(const char *dir) {
+    char path[PH_PATH_CAP + 32];
+    if (!dir || !dir[0]) return;
+    crash_path(dir, path, sizeof path);
+    if (remove(path) == 0)
+        ph_log(PH_LOG_INFO, "signal_crash: durable replay handoff complete");
 }
 
 /* --- OS handler: POSIX ------------------------------------------------- */
@@ -354,8 +363,12 @@ int ph_signal_crash_replay(const char *dir) {
 #include <ucontext.h>
 
 static char g_posix_path[PH_PATH_CAP + 32];
+static char g_posix_tmp_path[PH_PATH_CAP + 40];
 static int g_posix_installed;
 static stack_t g_altstack;
+static stack_t g_prev_altstack;
+static int g_prev_altstack_valid;
+static int g_altstack_owned;
 static volatile sig_atomic_t g_in_handler;
 static const int g_posix_sigs[] = {
 #ifdef SIGSEGV
@@ -386,6 +399,10 @@ static uint64_t posix_fault_pc(void *uctx) {
     return (uint64_t)((ucontext_t *)uctx)->uc_mcontext.gregs[REG_RIP];
 #elif defined(__linux__) && defined(__aarch64__)
     return (uint64_t)((ucontext_t *)uctx)->uc_mcontext.pc;
+#elif defined(__APPLE__) && defined(__x86_64__)
+    return (uint64_t)((ucontext_t *)uctx)->uc_mcontext->__ss.__rip;
+#elif defined(__APPLE__) && defined(__aarch64__)
+    return (uint64_t)((ucontext_t *)uctx)->uc_mcontext->__ss.__pc;
 #else
     (void)uctx;
     return 0;
@@ -426,11 +443,24 @@ static void posix_handler(int sig, siginfo_t *si, void *uctx) {
 
     len = ph_crash_encode(&ci, rec, sizeof rec);
     if (len) {
-        fd = open(g_posix_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        fd = open(g_posix_tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
         if (fd >= 0) {
-            ssize_t w = write(fd, rec, len);
-            (void)w;
-            close(fd);
+            size_t off = 0;
+            while (off < len) {
+                ssize_t w = write(fd, rec + off, len - off);
+                if (w > 0) off += (size_t)w;
+                else break;
+            }
+            if (off == len && fsync(fd) == 0) {
+                close(fd);
+                fd = -1;
+                /* Hard-link publication is atomic and refuses to replace an
+                 * older unacknowledged crash record. A second crash must not
+                 * erase the first report before its durable handoff. */
+                (void)link(g_posix_tmp_path, g_posix_path);
+                (void)unlink(g_posix_tmp_path);
+            }
+            if (fd >= 0) close(fd);
         }
     }
     /* Re-raise into the host's previous disposition so an existing crash handler
@@ -449,6 +479,7 @@ int ph_signal_crash_install(const char *dir) {
     if (g_posix_installed) return 1;
     crash_ensure_dir(dir);
     crash_path(dir, g_posix_path, sizeof g_posix_path);
+    snprintf(g_posix_tmp_path, sizeof g_posix_tmp_path, "%s.tmp", g_posix_path);
 
     /* Warm backtrace() so its lazy first call (which may dlopen/malloc) happens
      * here, not inside the signal handler where malloc is forbidden. */
@@ -456,11 +487,18 @@ int ph_signal_crash_install(const char *dir) {
 
     /* A generous alternate stack lets a stack-overflow SIGSEGV still run the
      * handler (bigger than SIGSTKSZ so the loader queries have room). */
+    g_prev_altstack_valid = sigaltstack(NULL, &g_prev_altstack) == 0;
+    g_altstack_owned = 0;
     g_altstack.ss_size = 64 * 1024;
     g_altstack.ss_sp = malloc(g_altstack.ss_size);
     if (g_altstack.ss_sp) {
         g_altstack.ss_flags = 0;
-        sigaltstack(&g_altstack, NULL);
+        if (sigaltstack(&g_altstack, NULL) == 0)
+            g_altstack_owned = 1;
+        else {
+            free(g_altstack.ss_sp);
+            g_altstack.ss_sp = NULL;
+        }
     }
 
     memset(&sa, 0, sizeof sa);
@@ -479,17 +517,32 @@ void ph_signal_crash_uninstall(void) {
     int idx;
     if (!g_posix_installed) return;
     for (idx = 0; g_posix_sigs[idx]; idx++) {
-        if (g_posix_prev_valid[idx])
+        struct sigaction current;
+        if (g_posix_prev_valid[idx] &&
+            sigaction(g_posix_sigs[idx], NULL, &current) == 0 &&
+            (current.sa_flags & SA_SIGINFO) &&
+            current.sa_sigaction == posix_handler)
             sigaction(g_posix_sigs[idx], &g_posix_prev[idx], NULL);
     }
-    if (g_altstack.ss_sp) {
-        stack_t off;
-        memset(&off, 0, sizeof off);
-        off.ss_flags = SS_DISABLE;
-        sigaltstack(&off, NULL);
+    if (g_altstack_owned && g_altstack.ss_sp) {
+        stack_t current;
+        /* Do not replace an alternate stack a host installed after us. */
+        if (sigaltstack(NULL, &current) == 0 &&
+            current.ss_sp == g_altstack.ss_sp) {
+            if (g_prev_altstack_valid)
+                sigaltstack(&g_prev_altstack, NULL);
+            else {
+                stack_t off;
+                memset(&off, 0, sizeof off);
+                off.ss_flags = SS_DISABLE;
+                sigaltstack(&off, NULL);
+            }
+        }
         free(g_altstack.ss_sp);
         g_altstack.ss_sp = NULL;
     }
+    g_altstack_owned = 0;
+    g_prev_altstack_valid = 0;
     g_posix_installed = 0;
 }
 
@@ -498,6 +551,7 @@ void ph_signal_crash_uninstall(void) {
 #elif defined(_WIN32)
 
 static char g_win_path[PH_PATH_CAP + 32];
+static char g_win_tmp_path[PH_PATH_CAP + 40];
 static int g_win_installed;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter;
 static volatile LONG g_in_filter;
@@ -533,12 +587,16 @@ static LONG WINAPI win_filter(EXCEPTION_POINTERS *ep) {
 
     len = ph_crash_encode(&ci, rec, sizeof rec);
     if (len) {
-        h = CreateFileA(g_win_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+        h = CreateFileA(g_win_tmp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                         FILE_ATTRIBUTE_NORMAL, NULL);
         if (h != INVALID_HANDLE_VALUE) {
             DWORD wrote = 0;
-            WriteFile(h, rec, (DWORD)len, &wrote, NULL);
+            BOOL ok = WriteFile(h, rec, (DWORD)len, &wrote, NULL) &&
+                      wrote == (DWORD)len && FlushFileBuffers(h);
             CloseHandle(h);
+            if (ok)
+                /* No REPLACE_EXISTING: preserve an older unacknowledged crash. */
+                MoveFileExA(g_win_tmp_path, g_win_path, MOVEFILE_WRITE_THROUGH);
         }
     }
     /* Chain to the previous filter (e.g. WER) so normal crash handling runs. */
@@ -550,14 +608,19 @@ int ph_signal_crash_install(const char *dir) {
     if (g_win_installed) return 1;
     crash_ensure_dir(dir);
     crash_path(dir, g_win_path, sizeof g_win_path);
+    snprintf(g_win_tmp_path, sizeof g_win_tmp_path, "%s.tmp", g_win_path);
     g_prev_filter = SetUnhandledExceptionFilter(win_filter);
     g_win_installed = 1;
     return 1;
 }
 
 void ph_signal_crash_uninstall(void) {
+    LPTOP_LEVEL_EXCEPTION_FILTER current;
     if (!g_win_installed) return;
-    SetUnhandledExceptionFilter(g_prev_filter);
+    current = SetUnhandledExceptionFilter(g_prev_filter);
+    /* A host may install a newer filter after posthog-c. Put it back instead
+     * of silently clobbering it during SDK shutdown. */
+    if (current != win_filter) SetUnhandledExceptionFilter(current);
     g_prev_filter = NULL;
     g_in_filter = 0;
     g_win_installed = 0;

@@ -21,6 +21,7 @@
 #define RMDIR(p) _rmdir(p)
 #else
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #define MKDIR(p) mkdir(p, 0777)
 #define RMDIR(p) rmdir(p)
@@ -68,6 +69,10 @@ static char *read_file(const char *path, size_t *out_len) {
 
 #ifndef _WIN32
 static void dummy_sig_handler(int sig) { (void)sig; }
+static void chain_exit_handler(int sig) {
+    (void)sig;
+    _exit(77);
+}
 #endif
 
 void suite_crash(void) {
@@ -157,6 +162,66 @@ void suite_crash(void) {
                   "POSIX crash uninstall must restore the prior SIGSEGV handler");
         sigaction(SIGSEGV, &old_sa, NULL);
     }
+
+    /* --- uninstall preserves a newer host handler and restores alt stack --- */
+    {
+        struct sigaction base_sa, dummy_sa, current_sa;
+        stack_t old_stack, host_stack, restored_stack;
+        void *host_mem = malloc(64 * 1024);
+        CHECK(sigaltstack(NULL, &old_stack) == 0);
+        memset(&host_stack, 0, sizeof host_stack);
+        host_stack.ss_sp = host_mem;
+        host_stack.ss_size = 64 * 1024;
+        CHECK(host_mem != NULL && sigaltstack(&host_stack, NULL) == 0);
+        CHECK(sigaction(SIGSEGV, NULL, &base_sa) == 0);
+        CHECK(ph_signal_crash_install(dir) == 1);
+        memset(&dummy_sa, 0, sizeof dummy_sa);
+        dummy_sa.sa_handler = dummy_sig_handler;
+        sigemptyset(&dummy_sa.sa_mask);
+        CHECK(sigaction(SIGSEGV, &dummy_sa, NULL) == 0);
+        ph_signal_crash_uninstall();
+        CHECK(sigaction(SIGSEGV, NULL, &current_sa) == 0);
+        CHECK(current_sa.sa_handler == dummy_sig_handler);
+        CHECK(sigaltstack(NULL, &restored_stack) == 0);
+        CHECK(restored_stack.ss_sp == host_stack.ss_sp);
+        CHECK(restored_stack.ss_size == host_stack.ss_size);
+        sigaction(SIGSEGV, &base_sa, NULL);
+        sigaltstack(&old_stack, NULL);
+        free(host_mem);
+    }
+
+    /* --- a real fatal signal is captured in a child and chains to the host --- */
+    {
+        char child_dir[256], child_path[320];
+        pid_t pid;
+        int status = 0;
+        snprintf(child_dir, sizeof child_dir, "%s_child", dir);
+        snprintf(child_path, sizeof child_path, "%s/%s", child_dir,
+                 PH_CRASH_FILENAME);
+        remove(child_path);
+        RMDIR(child_dir);
+        MKDIR(child_dir);
+        pid = fork();
+        if (pid == 0) {
+            struct sigaction chain;
+            memset(&chain, 0, sizeof chain);
+            chain.sa_handler = chain_exit_handler;
+            sigemptyset(&chain.sa_mask);
+            sigaction(SIGABRT, &chain, NULL);
+            if (!ph_signal_crash_install(child_dir)) _exit(79);
+            raise(SIGABRT);
+            _exit(78);
+        }
+        CHECK(pid > 0);
+        if (pid > 0) CHECK(waitpid(pid, &status, 0) == pid);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 77);
+        content = read_file(child_path, &clen);
+        CHECK(content != NULL && ph_crash_decode(content, clen, &b) == 1);
+        if (content) free(content);
+        CHECK(b.sig == SIGABRT);
+        remove(child_path);
+        RMDIR(child_dir);
+    }
 #endif
 
     /* --- replay: a forged record ships a $exception through the normal path --- */
@@ -193,6 +258,10 @@ void suite_crash(void) {
     mock_install();
 
     CHECK(ph_signal_crash_replay(dir) == 1);
+    content = read_file(recpath, &clen);
+    CHECK_MSG(content != NULL && clen == n,
+              "crash record must remain until sender durability handoff");
+    if (content) free(content);
     ph_flush(2000);
     CHECK(mock_batch_count() >= 1);
     if (mock_batch_count() >= 1) {

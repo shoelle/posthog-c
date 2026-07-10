@@ -277,6 +277,11 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                       int profile_mode, int stamp_super_groups,
                       const char *extra, size_t extra_len);
 
+/* Exception builder with additional internal event flags. Crash replay uses
+ * PH_EVF_CRASH_REPLAY so the sender can acknowledge durable handoff. */
+ph_result ph__capture_exception_flags(const ph_exception *ex,
+                                      unsigned char base_flags);
+
 /* Log through the configured sink, if any. */
 void ph_log(ph_log_level level, const char *fmt, ...);
 

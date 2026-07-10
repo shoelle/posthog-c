@@ -10,6 +10,7 @@
  * in max_batch-sized POSTs.
  */
 #include "ph_internal.h"
+#include "ph_crash.h"
 #include "ph_jsonval.h"
 #include "ph_str.h"
 #include "ph_time.h"
@@ -516,7 +517,7 @@ static void spill_queued(ph_event *scratch) {
  * interruptible on shutdown. `n` is the event count, for diagnostics + the
  * delivery counters. On permanent failure the body spills (if offline_path is
  * set) or is dropped. */
-static int send_one(const char *body, size_t len, int n) {
+static int send_one(const char *body, size_t len, int n, int has_crash_replay) {
     int status = -1;
     int attempt, attempts;
 
@@ -536,6 +537,8 @@ static int send_one(const char *body, size_t len, int n) {
     }
     if (status >= 200 && status < 300) {
         atomic_fetch_add(&g_ph.st_sent, (uint_least64_t)n);
+        if (has_crash_replay)
+            ph_signal_crash_handoff_complete(g_ph.offline_path);
     } else if (is_permanent_reject(status)) {
         /* Deterministic client error (bad key/body): spilling would just re-POST
          * and fail on every drain, blocking the queue. Drop it. */
@@ -545,6 +548,8 @@ static int send_one(const char *body, size_t len, int n) {
     } else if (g_ph.offline_path[0]) {
         if (offline_spill(body, len)) {
             ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
+            if (has_crash_replay)
+                ph_signal_crash_handoff_complete(g_ph.offline_path);
         } else {
             atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
             ph_log(PH_LOG_ERROR, "offline spill failed; %d events lost (status %d)",
@@ -564,6 +569,13 @@ static int send_one(const char *body, size_t len, int n) {
  * backpressure. Without offline_path the run is accounted as failed. */
 static void persist_run(ph_event *evs, int n) {
     ph_strbuf body;
+    int i, has_crash_replay = 0;
+
+    for (i = 0; i < n; i++)
+        if (evs[i].flags & PH_EVF_CRASH_REPLAY) {
+            has_crash_replay = 1;
+            break;
+        }
 
     if (!g_ph.offline_path[0]) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
@@ -597,6 +609,8 @@ static void persist_run(ph_event *evs, int n) {
     if (!offline_spill(body.data ? body.data : "", body.len)) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_ERROR, "offline spill failed; %d held events lost", n);
+    } else if (has_crash_replay) {
+        ph_signal_crash_handoff_complete(g_ph.offline_path);
     }
     ph_strbuf_free(&body);
 }
@@ -610,6 +624,13 @@ static void persist_run(ph_event *evs, int n) {
 static int send_run(ph_event *evs, int n) {
     ph_strbuf body;
     int blocked;
+    int i, has_crash_replay = 0;
+
+    for (i = 0; i < n; i++)
+        if (evs[i].flags & PH_EVF_CRASH_REPLAY) {
+            has_crash_replay = 1;
+            break;
+        }
 
     ph_strbuf_init(&body);
     refresh_clock_epoch();
@@ -636,7 +657,8 @@ static int send_run(ph_event *evs, int n) {
                "single event exceeds max_batch_bytes; event dropped instead of sent");
         return 0;
     }
-    blocked = send_one(body.data ? body.data : "", body.len, n);
+    blocked = send_one(body.data ? body.data : "", body.len, n,
+                       has_crash_replay);
     ph_strbuf_free(&body);
     return blocked;
 }

@@ -93,14 +93,14 @@ relevant native/WASM verification are green.
 
 ### Crash capture
 
-- [ ] **Do not delete a crash record before durable handoff.** Replay currently
+- [x] **Do not delete a crash record before durable handoff.** Replay currently
   removes the record immediately after enqueue; retain it until it has been
   durably spilled or acknowledged so a second crash/early exit cannot erase the
   first report.
-- [ ] **Preserve host crash-handler state.** Save and restore an existing POSIX
+- [x] **Preserve host crash-handler state.** Save and restore an existing POSIX
   alternate signal stack, avoid clobbering handlers installed after posthog-c,
   and apply equivalent care to the Windows top-level exception filter.
-- [ ] **Narrow the async-signal-safety claim.** Warming `backtrace()` does not
+- [x] **Narrow the async-signal-safety claim.** Warming `backtrace()` does not
   make `backtrace()`/`dladdr()` generally async-signal-safe. Clearly label the
   in-process handler best-effort, keep the known loader/allocation risks visible,
   and ensure macOS either records the real fault PC or documents that it cannot.

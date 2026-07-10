@@ -33,7 +33,8 @@ typedef enum ph_event_kind {
 enum {
     PH_EVF_NO_PROFILE = 1u << 0, /* force $process_person_profile:false */
     PH_EVF_HAS_DID = 1u << 1,    /* data[] carries a distinct_id override */
-    PH_EVF_SCRUBBED = 1u << 2    /* privacy scrub already ran before enqueue */
+    PH_EVF_SCRUBBED = 1u << 2,   /* privacy scrub already ran before enqueue */
+    PH_EVF_CRASH_REPLAY = 1u << 3 /* retain crash record until durable handoff */
 };
 
 /*

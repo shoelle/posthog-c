@@ -221,7 +221,9 @@ typedef struct ph_config {
                         * signals / Windows SEH): a fatal native crash is
                         * persisted and shipped as a $exception on the next
                         * launch. Default 0 = off (opt-in - it installs
-                        * process-global handlers). Requires offline_path.
+                        * process-global handlers). Best-effort only: stack
+                        * walking/module lookup are not async-signal-safe and
+                        * can fail if the loader/heap is corrupted. Requires offline_path.
                         * Native only; wasm ignores it. */
 
     int max_batch_bytes;   /* cap on serialized bytes per POST: a batch that would

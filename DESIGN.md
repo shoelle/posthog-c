@@ -276,11 +276,20 @@ serializer wholesale. Only two pieces are new: the OS handler and the crash-reco
 format.
 
 - **The handler stays minimal.** It runs in a dying process, so it snapshots only
-  the signal, the faulting address, and the stack, then `write()`s one fixed
-  record - no JSON, no `malloc`, on a static scratch buffer and (POSIX) a 64 KB
+  the signal, the faulting address, and the stack, then writes one fixed
+  record - no JSON or explicit SDK allocation, on a static scratch buffer and (POSIX) a 64 KB
   `sigaltstack` so a stack-overflow crash still has room. The faulting
   instruction (from the crash context's `RIP`/`PC`) leads the trace, since the
-  captured top frames are the handler + dispatcher themselves.
+  captured top frames are the handler + dispatcher themselves. Linux x86-64 /
+  AArch64 and macOS x86-64 / Apple Silicon read that PC from `ucontext`.
+- **Persistence and handoff are conservative.** The handler flushes a private
+  temporary record and publishes it atomically without replacing an older
+  unacknowledged crash. Replay marks the queued exception and retains the source
+  record until the sender either receives a 2xx or durably spills the batch.
+- **Host handler state is preserved.** POSIX install/uninstall saves and restores
+  the previous alternate stack and signal dispositions, but will not overwrite
+  a newer handler installed by the host. Windows applies the equivalent
+  last-writer check around the top-level exception filter.
 - **Frames are `(module, offset)`, not absolute addresses.** ASLR relocates
   modules between the crash and the replay, so an absolute address from the dead
   process is meaningless in the next one. The handler resolves each address to
@@ -289,10 +298,11 @@ format.
   function names needs the debug info, which is the `minidump_crash` server's
   job; the SDK deliberately stops at capture. This also means **no `dbghelp`/
   symbol dependency** in the SDK.
-- **Known limits (v0.6).** The per-frame module lookup takes the loader
-  lock, so a crash *inside* the loader can stall the handler - the fundamental
+- **Known limits (v0.6).** `backtrace()` and `dladdr()` are not
+  async-signal-safe and can allocate or take the loader lock despite warmup, so
+  heap corruption or a crash *inside* the loader can stall the handler - the fundamental
   reason robust capture is out-of-process (Crashpad). The replayed event is
   timestamped at next launch, not crash time. Both are documented in
   [`TODO.md`](TODO.md); the answer to both is the `minidump_crash` path, not more
-  in-process cleverness. The Windows path is validated against a real fault
-  end-to-end; the POSIX path compiles for Linux in CI and is verified there.
+  in-process cleverness. Platform tests run actual fatal faults in subprocesses
+  so the main test runner survives.

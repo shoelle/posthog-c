@@ -15,8 +15,10 @@
  * raw absolute address) is what makes the frames meaningful across the restart:
  * ASLR relocates modules between runs, so an absolute address from the crashed
  * process is nonsense in the next one - but "myapp.exe + 0x1361" is stable, and
- * a symbol server can resolve it. Turning offsets into function names is the
- * minidump_crash server's job; the SDK deliberately stops at capture.
+ * a symbol server can resolve it. Stack walking and loader lookup are not
+ * async-signal-safe, however: this in-process mode is explicitly best-effort
+ * and may fail during heap/loader corruption. Turning offsets into function
+ * names is the minidump_crash server's job; the SDK stops at capture.
  *
  * All of the above happens later, in normal context, on the next run:
  * ph_signal_crash_replay() decodes the record into a ph_exception and hands it
@@ -59,9 +61,12 @@ int ph_signal_crash_install(const char *dir);
 void ph_signal_crash_uninstall(void);
 
 /* If a signal_crash record from a previous run is present under `dir`, decode it
- * into a $exception and hand it to ph_capture_exception, then remove the record.
- * Normal context. Returns the number replayed (0 or 1). */
+ * into a marked $exception. The sender removes the record only after delivery
+ * or durable offline spill. Normal context. Returns the number enqueued (0/1). */
 int ph_signal_crash_replay(const char *dir);
+
+/* Sender acknowledgement after a marked replay event is durably handed off. */
+void ph_signal_crash_handoff_complete(const char *dir);
 
 /* --- pure helpers, exposed for unit tests ----------------------------- */
 

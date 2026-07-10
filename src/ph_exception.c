@@ -126,7 +126,8 @@ static int prepare_exception_props(const ph_exception *ex, ph_props *p,
     return 1;
 }
 
-void ph_capture_exception(const ph_exception *ex) {
+ph_result ph__capture_exception_flags(const ph_exception *ex,
+                                      unsigned char base_flags) {
     ph_props p;
     ph_strbuf list;
     char extra[PH_EVENT_DATA_CAP];
@@ -135,7 +136,9 @@ void ph_capture_exception(const ph_exception *ex) {
     char message[PH_EXCEPTION_FIELD_CAP];
     int omit_function, omit_filename, omit_module, omit_frames;
 
-    if (!g_ph.enabled || !ex) return;
+    ph_result result;
+    if (!g_ph.enabled) return PH_ERR_DISABLED;
+    if (!ex) return PH_ERR_BADARG;
 
     /* The structured exception payload has to be copied before caller-owned
      * pointers go stale. Run the privacy hook here for exceptions so type/message
@@ -143,7 +146,7 @@ void ph_capture_exception(const ph_exception *ex) {
     if (!prepare_exception_props(ex, &p, type, sizeof(type), message, sizeof(message),
                                  &omit_function, &omit_filename, &omit_module,
                                  &omit_frames))
-        return;
+        return PH_ERR;
 
     /* The nested $exception_list rides as a rawjson entry (the flat packer can't
      * express nested arrays/objects); the serializer emits it verbatim. */
@@ -154,7 +157,13 @@ void ph_capture_exception(const ph_exception *ex) {
         extra_len = ph_pack_str_entry(extra, sizeof(extra), (unsigned char)PH_PK_RAWJSON,
                                       "$exception_list", list.data);
 
-    ph__submit_event(PH_EV_EXCEPTION, PH_EVF_SCRUBBED, "$exception", NULL, &p, -1, 1,
-                     extra, extra_len);
+    result = ph__submit_event(PH_EV_EXCEPTION,
+                              (unsigned char)(PH_EVF_SCRUBBED | base_flags),
+                              "$exception", NULL, &p, -1, 1, extra, extra_len);
     ph_strbuf_free(&list);
+    return result;
+}
+
+void ph_capture_exception(const ph_exception *ex) {
+    (void)ph__capture_exception_flags(ex, 0);
 }
