@@ -260,6 +260,25 @@ pub fn build(b: *std.Build) void {
     const run_example_cpp = b.addRunArtifact(example_cpp);
     b.step("run-example-cpp", "Run the C++ quickstart example").dependOn(&run_example_cpp.step);
 
+    // -- Opt-in live contract (credentials come only from the environment) --
+    const live = b.addExecutable(.{
+        .name = "posthog_live_contract",
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    addIncludes(b, live);
+    live.addCSourceFiles(.{ .files = &.{"tests/live_contract.c"}, .flags = &c_flags });
+    live.linkLibrary(lib);
+    linkPlatform(live, target);
+    b.step("live-contract-compile", "Compile the opt-in live PostHog contract test")
+        .dependOn(&live.step);
+    const run_live = b.addRunArtifact(live);
+    b.step("live-contract", "Run the opt-in live contract (requires POSTHOG_API_KEY)")
+        .dependOn(&run_live.step);
+
     // -- WASM backend: `zig build test-wasm` -----------------------------
     // Compiles the shim + shared core with emcc, then runs the Node parity
     // harness (a mocked window.posthog). This explicit step fails when emcc or

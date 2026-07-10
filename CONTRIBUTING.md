@@ -66,7 +66,9 @@ threading contract.
    changelog in one commit.
 3. Run Debug and ReleaseSafe native tests on Windows/Linux/macOS, Linux
    ASan/UBSan, bounded fuzzing, WASM, and the downstream consumer smoke test.
-4. Run the opt-in live contract test with a disposable PostHog project and
-   verify batch ingestion, flags, payloads, quota handling, and exposure events.
+4. Run the opt-in `Live PostHog contract` workflow with a disposable project to
+   verify batch ingestion, flags, payloads, and exposure events. Quota response
+   behavior stays in deterministic mock/parser tests; deliberately exhausting a
+   live project's quota is neither safe nor repeatable.
 5. Inspect the packaged source set, create a signed tag, and publish release
    notes that call out platform gaps and any source/API incompatibility.

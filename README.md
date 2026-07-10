@@ -87,6 +87,11 @@ zig build fuzz         # fuzz the two network-facing parsers (JSON + HTTP)
 zig build run-example  # run the C quickstart
 ```
 
+`zig build live-contract` is intentionally separate and requires
+`POSTHOG_API_KEY`; maintainers run it against a disposable project before a
+release. Optional flag/payload expectations are documented in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
 
 ### Using it

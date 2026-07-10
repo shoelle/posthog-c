@@ -1,0 +1,26 @@
+name: Live PostHog contract
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: windows-latest
+    environment: posthog-live
+    env:
+      POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+      POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
+      POSTHOG_DISTINCT_ID: posthog-c-release-contract
+      POSTHOG_FLAG_KEY: ${{ vars.POSTHOG_FLAG_KEY }}
+      POSTHOG_EXPECT_FLAG: ${{ vars.POSTHOG_EXPECT_FLAG }}
+      POSTHOG_EXPECT_PAYLOAD: ${{ vars.POSTHOG_EXPECT_PAYLOAD }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
+        with:
+          version: 0.15.2
+      - name: Ingestion, flags, payload, and exposure contract
+        run: zig build -Doptimize=ReleaseSafe live-contract

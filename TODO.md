@@ -143,7 +143,7 @@ Where posthog-c is deliberately stronger than other telemetry SDKs:
 
 ## Tests, packaging, and public presentation
 
-- [ ] Add ReleaseSafe and Linux ASan/UBSan CI jobs, a bounded fuzz CI job, and a
+- [x] Add ReleaseSafe and Linux ASan/UBSan CI jobs, a bounded fuzz CI job, and a
   package-consumer smoke project. Keep an opt-in live PostHog contract test for
   `/batch/`, `/flags/`, payloads, quota responses, and exposure events.
 - [x] Make an explicitly requested `zig build test-wasm` fail when emcc or Node
