@@ -62,8 +62,14 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
             m.linkSystemLibrary("pthread", .{});
             m.linkSystemLibrary("dl", .{});
         },
-        // macOS et al.: dladdr/backtrace are in libSystem; pthread is part of
-        // libc, but requesting it explicitly is harmless and correct.
+        // macOS: Secure Transport (Security.framework) for TLS in ph_tls.c;
+        // CoreFoundation for CFRelease of the SSL context. pthread is in libc.
+        .macos => {
+            m.linkSystemLibrary("pthread", .{});
+            m.linkFramework("Security", .{});
+            m.linkFramework("CoreFoundation", .{});
+        },
+        // Other Unix (Linux handled above): backtrace/dladdr live in libc.
         else => m.linkSystemLibrary("pthread", .{}),
     }
 }

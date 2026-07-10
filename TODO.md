@@ -14,7 +14,7 @@ snapshot to PostHog itself, and to close the accounting gaps listed above.
 
 ## Linux/macOS TLS
 
-Linux (vendored BearSSL) and macOS (Secure Transport / NSURLSession) are stubbed - `ph_tls_send`/`ph_tls_fetch` return `-1` off-Windows. See the TLS-library tradeoff in DESIGN.md.
+macOS now has a Secure Transport backend (`ph_tls.c`, `#if __APPLE__`): it verifies the cert chain + hostname against the system trust store. The C compiles cross-target; the framework link and real handshake still need validation on a Mac - the live-contract runs on Windows only today, so add a macOS leg to exercise it. Linux is still stubbed (`ph_tls_send`/`ph_tls_fetch` return `-1`); vendored BearSSL is next, and it needs system CA trust anchors. See the TLS-library tradeoff in DESIGN.md.
 
 ## Deliberately out of scope (don't re-litigate)
 
