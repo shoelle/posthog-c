@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Repo-local guidance for coding agents in `posthog-c/` - an embeddable **PostHog
-SDK for C/C++**: one public C ABI, a native backend (own HTTP + background
+SDK for C/C++**: one public C interface, a native backend (own HTTP + background
 sender) and a WASM backend (a shim over `window.posthog`). This file is the
 coding brief - conventions, the module map, and the invariants that must hold.
 See [`DESIGN.md`](DESIGN.md) for architecture + roadmap and
@@ -15,14 +15,14 @@ When these conflict, prefer in order:
 3. inline comments near the code
 4. [`README.md`](README.md)
 
-The public contract is [`include/posthog.h`](include/posthog.h). Treat it as an
-ABI: additive changes only within a major version; never reorder or repurpose
-existing struct fields or enum values.
+The current public source contract is [`include/posthog.h`](include/posthog.h).
+Consumers compile the SDK and headers with their application; this unofficial
+0.x project does not promise source or binary compatibility between releases.
 
 ## Architecture at a glance
 
 ```
-include/posthog.h        public C ABI (the contract)
+include/posthog.h        public C API (the current source contract)
 include/posthog.hpp      header-only C++ convenience wrapper
 
 src/ph_core.c            SDK instance, lifecycle, and the shared enqueue path (ph__submit_event)
@@ -54,7 +54,7 @@ behind each piece are in DESIGN.md ("Native delivery pipeline").
 
 ## Coding conventions
 
-- **C11 core, C ABI.** Plain C for maximum embeddability and zero C++ runtime
+- **C11 core, C interface.** Plain C for maximum embeddability and zero C++ runtime
   dependency. The public header is `extern "C"`-guarded. No exceptions/RTTI
   anywhere (the C++ wrapper is exception-free too), so it links into strict
   engines built with `-fno-exceptions`.

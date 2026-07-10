@@ -29,4 +29,4 @@ Where posthog-c is deliberately stronger than other telemetry SDKs:
 ## Nice-to-have
 
 - **Model offline-spill as a transport** behind the `ph_transport` seam instead of special-casing it in the sender - the 429/quota hold would then compose as "route to the disk transport while blocked".
-- **Generated string<->enum converters** for public enums - cheap human-readable logging across the ABI.
+- **Generated string<->enum converters** for public enums - cheap human-readable logging across the C interface.

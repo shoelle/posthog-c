@@ -1,7 +1,7 @@
 /*
- * posthog.h - PostHog C SDK, public C ABI.
+ * posthog.h - PostHog C SDK, public C API.
  *
- * A small, embeddable PostHog client for C/C++ applications. One public ABI,
+ * A small, embeddable PostHog client for C/C++ applications. One C interface,
  * two compile-time transports: `native` (owns HTTP + a background sender
  * thread + an on-disk offline queue) and `wasm` (a thin shim over the
  * browser's already-loaded `window.posthog`). Callers never see the split.
@@ -10,7 +10,7 @@
  * `/i/v0/e/`, `/flags/`) - no dependency on another PostHog SDK.
  *
  * This is a C header: any C or C++ program can include it, and any language
- * can bind the resulting ABI. A header-only C++ convenience wrapper lives in
+ * can bind the resulting interface. A header-only C++ convenience wrapper lives in
  * posthog.hpp.
  *
  * Design rationale: see DESIGN.md.
@@ -43,9 +43,8 @@ const char *ph_version(void);
  * These bound the SDK's fixed storage so the capture hot path never calls
  * malloc. They are compile-time constants: when the SDK is consumed as
  * source (the intended path - a submodule wrapped by the host's build), the
- * lib and the caller compile against the same values, so there is no ABI
- * hazard. Override any of them with -D before including this header if your
- * event shapes need more room.
+ * library and caller compile against the same values. Override any of them with
+ * -D before including this header if your event shapes need more room.
  */
 #ifndef PH_MAX_PROPS
 #define PH_MAX_PROPS 24 /* max user properties per event */
@@ -211,10 +210,10 @@ typedef struct ph_config {
                         * process-global handlers). Requires offline_path.
                         * Native only; wasm ignores it. */
 
-    /* New fields are appended here (never reordered) to keep the ABI additive. */
     int max_batch_bytes;   /* cap on serialized bytes per POST: a batch that would
                             * exceed it is split into several POSTs. 0 = no byte
                             * cap (count only). ph_config_defaults sets 1 MiB.
+                            * An unsplittable event over the cap is dropped.
                             * Guards against oversized-body 413s. Native only. */
     ph_stats_fn on_stats;  /* periodic health snapshot; NULL = off (see ph_stats_fn) */
     int stats_interval_ms; /* emit on_stats every ~N ms; 0 = disabled (default).

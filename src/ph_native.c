@@ -208,6 +208,12 @@ static void offline_replay(void) {
             int keep_line;
             if (stopped) {
                 keep_line = 1; /* never attempted - keep for a later drain */
+            } else if (g_ph.max_batch_bytes > 0 &&
+                       linelen > (size_t)g_ph.max_batch_bytes) {
+                keep_line = 0;
+                ph_log(PH_LOG_WARN,
+                       "offline: dropping %lu-byte batch over max_batch_bytes",
+                       (unsigned long)linelen);
             } else {
                 int status = post_and_note(buf + line_start, linelen);
                 if (status >= 200 && status < 300) {
@@ -356,22 +362,12 @@ static int sender_backoff_wait(int ms) {
     return 0;
 }
 
-static void spill_batch(ph_event *evs, int n) {
-    ph_strbuf body;
+static void persist_run(ph_event *evs, int n);
 
+static void spill_batch(ph_event *evs, int n) {
     n = scrub_events(evs, n);
     if (n == 0) return;
-
-    ph_strbuf_init(&body);
-    ph_serialize_batch(&g_ph, evs, n, &body);
-    if (body.oom) {
-        ph_strbuf_free(&body);
-        ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d held events", n);
-        return;
-    }
-
-    offline_spill(body.data ? body.data : "", body.len);
-    ph_strbuf_free(&body);
+    persist_run(evs, n);
 }
 
 static void spill_queued(ph_event *scratch) {
@@ -407,7 +403,7 @@ static void spill_queued(ph_event *scratch) {
  * interruptible on shutdown. `n` is the event count, for diagnostics + the
  * delivery counters. On permanent failure the body spills (if offline_path is
  * set) or is dropped. */
-static void send_one(const char *body, size_t len, int n) {
+static int send_one(const char *body, size_t len, int n) {
     int status = -1;
     int attempt, attempts;
 
@@ -442,15 +438,56 @@ static void send_one(const char *body, size_t len, int n) {
                "batch POST failed (status %d); %d events dropped "
                "(set offline_path to persist failed batches)", status, n);
     }
+    return ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns());
+}
+
+/* Persist an already-scrubbed run without exceeding max_batch_bytes. Used for
+ * shutdown spill and for unsent siblings after one split POST trips server
+ * backpressure. Without offline_path the run is accounted as failed. */
+static void persist_run(ph_event *evs, int n) {
+    ph_strbuf body;
+
+    if (!g_ph.offline_path[0]) {
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_WARN, "%d unsent events dropped (set offline_path to persist)", n);
+        return;
+    }
+
+    ph_strbuf_init(&body);
+    ph_serialize_batch(&g_ph, evs, n, &body);
+    if (body.oom) {
+        ph_strbuf_free(&body);
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d held events", n);
+        return;
+    }
+    if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes) {
+        if (n > 1) {
+            int half = n / 2;
+            ph_strbuf_free(&body);
+            persist_run(evs, half);
+            persist_run(evs + half, n - half);
+            return;
+        }
+        ph_strbuf_free(&body);
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)1);
+        ph_log(PH_LOG_WARN,
+               "single event exceeds max_batch_bytes; event dropped instead of spilled");
+        return;
+    }
+    offline_spill(body.data ? body.data : "", body.len);
+    ph_strbuf_free(&body);
 }
 
 /* Serialize evs[0..n) (already scrubbed) and POST it. If the serialized body
  * would exceed max_batch_bytes, split the run in half and recurse so no single
  * POST exceeds the cap - PostHog rejects oversized bodies. A lone event over the
- * cap is sent as-is (it can't be split). Splits are rare, so the extra
- * serialization is paid only when a batch is genuinely too big. */
-static void send_run(ph_event *evs, int n) {
+ * cap is dropped because it cannot be split. Returns nonzero when a response
+ * arms server backpressure; recursive callers persist their unsent siblings
+ * without issuing another POST. */
+static int send_run(ph_event *evs, int n) {
     ph_strbuf body;
+    int blocked;
 
     ph_strbuf_init(&body);
     ph_serialize_batch(&g_ph, evs, n, &body);
@@ -458,23 +495,33 @@ static void send_run(ph_event *evs, int n) {
         ph_strbuf_free(&body);
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d events", n);
-        return;
+        return 0;
     }
-    if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes && n > 1) {
-        int half = n / 2;
+    if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes) {
+        if (n > 1) {
+            int half = n / 2;
+            ph_strbuf_free(&body);
+            if (send_run(evs, half)) {
+                persist_run(evs + half, n - half);
+                return 1;
+            }
+            return send_run(evs + half, n - half);
+        }
         ph_strbuf_free(&body);
-        send_run(evs, half);
-        send_run(evs + half, n - half);
-        return;
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)1);
+        ph_log(PH_LOG_WARN,
+               "single event exceeds max_batch_bytes; event dropped instead of sent");
+        return 0;
     }
-    send_one(body.data ? body.data : "", body.len, n);
+    blocked = send_one(body.data ? body.data : "", body.len, n);
     ph_strbuf_free(&body);
+    return blocked;
 }
 
 static void send_batch(ph_event *evs, int n) {
     n = scrub_events(evs, n); /* strip denylist / run before_send, compacting drops */
     if (n == 0) return;       /* every event was scrubbed away */
-    send_run(evs, n);
+    (void)send_run(evs, n);
 }
 
 /* Drain: replay any spilled batches first (preserving order across a
@@ -529,7 +576,7 @@ static void emit_stats(void) {
     failed = atomic_load(&g_ph.st_failed);
     retries = atomic_load(&g_ph.st_retries);
     bs = atomic_load(&g_ph.st_before_send_dropped);
-    total = rl_dropped + ring_dropped + bs + failed;
+    total = rl_dropped + ring_dropped + bs;
 
     len = snprintf(buf, sizeof(buf),
         "{\"queued\":%llu,\"queue_cap\":%d,\"sent\":%llu,\"failed\":%llu,"

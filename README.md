@@ -4,6 +4,8 @@ This is an **unofficial** small, embeddable **PostHog SDK** for C and C++.
 
 > **Status:** pre-1.0, lightly tested on Windows.
 
+This is a source-distributed SDK: compile it and its headers with your application. No prebuilt binaries or cross-release source/binary compatibility are promised while the project remains unofficial and 0.x.
+
 ## Details
 
 - **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a thin shim over the browser's already-loaded `window.posthog`.

@@ -7,7 +7,9 @@ decision-oriented companion to the code; the public contract is
 
 ## 0. Goals
 
-- A single **public C ABI** any language can bind, stable across versions.
+- A single **public C interface** any language can bind. Consumers compile the
+  SDK and headers with their application; this unofficial 0.x project does not
+  promise source or binary compatibility between releases.
 - **Two transports, one API.** `native` brings its own HTTP + threading; `wasm`
   reuses the browser's `window.posthog`. Callers can't tell which is compiled
   in. Only the delivery mechanism differs.
@@ -17,11 +19,11 @@ decision-oriented companion to the code; the public contract is
   exceptions/RTTI in the core, and a capture path that never allocates so it
   can be called from a deterministic simulation loop.
 
-## 1. One ABI, two transports
+## 1. One C interface, two transports
 
 ```
              +--------------------------+
-   caller -> |  posthog.h  (public ABI) |
+   caller -> |  posthog.h  (public API) |
              +------------+-------------+
                           |
           #if !__EMSCRIPTEN__      #if __EMSCRIPTEN__
@@ -177,7 +179,7 @@ customer's own integration reference:
 
 | Stage | Adds |
 |---|---|
-| **v0.1** (done) | C ABI, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
+| **v0.1** (done) | C API, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
 | **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After` + `quota_limited` body), offline disk queue (spill/replay), `ph_dropped_events()` |
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP -> real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
 | **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
@@ -202,8 +204,8 @@ customer's own integration reference:
    can wrap them later. Native + WASM both build in CI.
 4. **C core vs C++ core.** Implemented in **C11** - a library literally named
    `posthog-c`, maximally embeddable, with zero C++ runtime dependency - plus a
-   header-only C++ convenience wrapper. C ABI buys FFI + ABI stability + the
-   broadest reuse.
+   header-only C++ convenience wrapper. The C calling interface buys FFI and
+   the broadest reuse.
 5. **Fixed capacities.** Per-event property caps and the ring size are
    compile-time constants (overridable with `-D`). Safe because the SDK is
    consumed as source. The tradeoff: a pathological event with many long strings

@@ -4,6 +4,7 @@
  * identity / super-property / group behaviour) without touching the network.
  */
 #include "posthog.h"
+#include "ph_thread.h"
 #include "mock_transport.h"
 #include "test_util.h"
 
@@ -45,14 +46,16 @@ static void init_test_sdk(void) {
 /* Captures the latest on_stats JSON for the stats test below. */
 static char g_stats_json[512];
 static int g_stats_calls;
+static ph_mutex g_stats_lock;
 static void stats_cb(const char *json, size_t len, void *user) {
-    size_t n = strlen(json);
-    (void)len;
+    size_t n = len;
     (void)user;
+    ph_mutex_lock(&g_stats_lock);
     g_stats_calls++;
     if (n >= sizeof(g_stats_json)) n = sizeof(g_stats_json) - 1;
     memcpy(g_stats_json, json, n);
     g_stats_json[n] = '\0';
+    ph_mutex_unlock(&g_stats_lock);
 }
 
 void suite_capture(void) {
@@ -199,7 +202,7 @@ void suite_capture(void) {
     /* --- max_batch_bytes splits an over-cap batch into multiple POSTs --- */
     {
         ph_config cfg;
-        int i;
+        int i, batches;
         ph_config_defaults(&cfg);
         cfg.api_key = "phc_bytes";
         cfg.distinct_id = "anon-bytes";
@@ -213,7 +216,52 @@ void suite_capture(void) {
         mock_install();
         for (i = 0; i < 8; i++) ph_capture("byte_cap_event", NULL);
         ph_flush(2000);
-        CHECK(mock_batch_count() > 1); /* the byte cap forced a split */
+        batches = mock_batch_count();
+        CHECK(batches > 1); /* the byte cap forced a split */
+        for (i = 0; i < batches; i++)
+            CHECK(strlen(mock_batch(i)) <= (size_t)cfg.max_batch_bytes);
+        ph_shutdown();
+    }
+
+    /* --- an unsplittable event over max_batch_bytes is never POSTed --- */
+    {
+        ph_config cfg;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_single_bytes";
+        cfg.distinct_id = "anon-single-bytes";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.max_batch_bytes = 100; /* smaller than one serialized bare event */
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        ph_capture("single_over_cap", NULL);
+        ph_flush(2000);
+        CHECK(mock_batch_count() == 0);
+        ph_shutdown();
+    }
+
+    /* --- a split batch stops POSTing as soon as server backpressure arms --- */
+    {
+        ph_config cfg;
+        int i;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_split_hold";
+        cfg.distinct_id = "anon-split-hold";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.max_batch = 100;
+        cfg.max_batch_bytes = 400;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        mock_set_status(429);
+        mock_set_retry_after("60");
+        for (i = 0; i < 8; i++) ph_capture("split_hold_event", NULL);
+        ph_flush(2000);
+        CHECK(mock_batch_count() == 1);
         ph_shutdown();
     }
 
@@ -221,6 +269,8 @@ void suite_capture(void) {
     {
         ph_config cfg;
         int i;
+        int stats_calls;
+        char stats_json[sizeof(g_stats_json)];
         ph_config_defaults(&cfg);
         cfg.api_key = "phc_stats";
         cfg.distinct_id = "anon-stats";
@@ -230,17 +280,27 @@ void suite_capture(void) {
         cfg.rate_limit_per_sec = 1; /* generate some rate-limit drops */
         cfg.stats_interval_ms = 30; /* emit quickly for the test */
         cfg.on_stats = stats_cb;
+        ph_mutex_init(&g_stats_lock);
+        ph_mutex_lock(&g_stats_lock);
         g_stats_calls = 0;
         g_stats_json[0] = '\0';
+        ph_mutex_unlock(&g_stats_lock);
         CHECK(ph_init(&cfg) == PH_OK);
         mock_reset();
         mock_install();
+        mock_set_status(400); /* accepted event fails; drops remain limiter-only */
         for (i = 0; i < 6; i++) ph_capture("flood", NULL); /* 1 sent, ~5 dropped */
         sleep_ms(200);                                     /* let stats fire */
-        CHECK(g_stats_calls > 0);
-        CHECK_CONTAINS(g_stats_json, "\"queued\":");
-        CHECK_CONTAINS(g_stats_json, "\"dropped\":{");
-        CHECK_CONTAINS(g_stats_json, "\"rate_limited\":");
+        ph_mutex_lock(&g_stats_lock);
+        stats_calls = g_stats_calls;
+        memcpy(stats_json, g_stats_json, sizeof(stats_json));
+        ph_mutex_unlock(&g_stats_lock);
+        CHECK(stats_calls > 0);
+        CHECK_CONTAINS(stats_json, "\"queued\":");
+        CHECK_CONTAINS(stats_json, "\"failed\":1");
+        CHECK_CONTAINS(stats_json,
+                       "\"dropped\":{\"total\":5,\"rate_limited\":5");
         ph_shutdown();
+        ph_mutex_destroy(&g_stats_lock);
     }
 }

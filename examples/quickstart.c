@@ -1,5 +1,5 @@
 /*
- * quickstart.c - the smallest useful posthog-c program (C ABI).
+ * quickstart.c - the smallest useful posthog-c program (C API).
  *
  * Build + run:  zig build run-example
  *
