@@ -1,9 +1,12 @@
 /*
  * posthog.h - PostHog C SDK, public C API.
  *
- * A small, embeddable PostHog client for C/C++ applications. One C interface,
- * two compile-time transports: `native` (owns HTTP + a background sender
- * thread + an on-disk offline queue) and `wasm` (a thin shim over the
+ * A small, embeddable PostHog client for C/C++ applications. Built so
+ * ph_capture() is safe to call from a hot thread (a game/render/audio loop):
+ * it copies into a bounded ring and returns without allocating, blocking,
+ * reading the wall clock, or hitting the network on the caller. One C
+ * interface, two compile-time transports: `native` (owns HTTP + a background
+ * sender thread + an on-disk offline queue) and `wasm` (a thin shim over the
  * browser's already-loaded `window.posthog`). Callers never see the split.
  *
  * Native rides PostHog's documented raw ingestion API (`/batch/`, `/flags/`).

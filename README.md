@@ -4,9 +4,11 @@ This is an **unofficial** small, embeddable **PostHog SDK** for C and C++.
 
 > **Status:** pre-1.0, lightly tested on Windows.
 
+**What it's for.** Native apps that can't take a telemetry stall on a hot thread - game engines, audio and creative tools, desktop and embedded software. `ph_capture()` copies your event into a fixed-size ring and returns; on the calling thread it never allocates, reads the wall clock, uses RNG, or touches the network. Serialization, gzip, HTTP, and retries all run on a background sender thread. That guarantee is the reason this exists instead of a few lines of `curl` against PostHog's HTTP API.
+
 This is a source-distributed SDK: compile it and its headers with your application. No prebuilt binaries or cross-release source/binary compatibility are promised while the project remains unofficial and 0.x.
 
-## Details
+## Highlights
 
 - **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a thin shim over the browser's already-loaded `window.posthog`.
 - **Native has no SDK dependency.** It follows PostHog's raw HTTP endpoints; WASM deliberately delegates to the page's already-loaded posthog-js.
