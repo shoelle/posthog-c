@@ -98,26 +98,23 @@ fn findEmcc(b: *std.Build) ?[]const u8 {
     return b.findProgram(&.{emcc_name}, extra[0..n]) catch null;
 }
 
-/// True if `path` names an existing regular file (not a directory). Guards the
-/// node lookup: emsdk puts $EMSDK on PATH, where a `node` *directory* lives, and
-/// b.findProgram matches by existence, so it can otherwise return that directory.
-fn isFile(path: []const u8) bool {
-    const st = std.fs.cwd().statFile(path) catch return false;
-    return st.kind == .file;
-}
-
-/// Locate node for the WASM behavioral harness: emsdk's EMSDK_NODE, then PATH,
-/// then the version-stamped directory emsdk bundles (<emsdk>/node/<ver>/bin/node).
+/// Locate node for the WASM behavioral harness: emsdk's EMSDK_NODE (the exact
+/// bundled binary), then PATH, then the version-stamped directory emsdk bundles
+/// (<emsdk>/node/<ver>/bin/node).
 fn findNode(b: *std.Build) ?[]const u8 {
     const node_name: []const u8 = if (builtin.os.tag == .windows) "node.exe" else "node";
 
-    // emsdk exports EMSDK_NODE as the exact bundled node binary; prefer it.
+    // emsdk exports EMSDK_NODE as the exact bundled node binary; prefer it. This
+    // also sidesteps b.findProgram matching the un-spawnable `node` *directory*
+    // that setup-emsdk leaves on $PATH. (A statFile guard here would be nicer,
+    // but it drags __availability_version_check into the macOS build runner and
+    // breaks its libSystem link.)
     if (std.process.getEnvVarOwned(b.allocator, "EMSDK_NODE")) |n| {
-        if (isFile(n)) return n;
+        return n;
     } else |_| {}
 
     if (b.findProgram(&.{node_name}, &.{})) |p| {
-        if (isFile(p)) return p;
+        return p;
     } else |_| {}
 
     const home_env: []const u8 = if (builtin.os.tag == .windows) "USERPROFILE" else "HOME";
