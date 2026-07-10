@@ -1,12 +1,10 @@
 # TODO
 
-## Pre-publication audit (2026-07-10)
-
 ## Crash
 
 - **Out-of-process `minidump_crash`.** In-process capture can't survive heap corruption and takes the loader lock during the per-frame module lookup (a crash *inside* the loader can stall the handler). The robust answer is a Crashpad-style out-of-process handler writing a minidump, symbolicated server-side by a separate **`posthog-crash`** service against a symbol store - that is where function *names* come from (we emit module+offset). Pick the backend at compile time. Prior art: [Breakpad](https://chromium.googlesource.com/breakpad/breakpad/), [Crashpad](https://chromium.googlesource.com/crashpad/crashpad/).
 - **Crash-time timestamps.** The replayed `$exception` is stamped at next-launch time, not when the crash happened. Record a wall-clock estimate in the crash record and inject it as the event `timestamp` at replay (needs an explicit-timestamp path through the serializer).
-- **POSIX runtime verification.** The Windows SEH path is validated against a real fault end-to-end; the POSIX `sigaction` path is compile-checked (Linux cross-build) and still needs a real-fault integration test on the Linux/macOS CI runners (a subprocess that faults, mirroring the Windows one). glibc `backtrace()` is absent on musl - document or guard.
+- **macOS fault-PC and musl `backtrace()`.** The POSIX `sigaction` path now passes its real-fault integration test on both the Linux and macOS CI runners - a subprocess raises `SIGABRT`, our handler records it and chains to a host handler, and the record is decoded on replay (previously this was only compile-checked off-Windows). Two gaps remain: on macOS the faulting-instruction PC is not extracted (reading it through `uc_mcontext` faulted the arm64 handler, so we fall back to `backtrace()`; restore an alignment-safe read validated on real hardware), and glibc `backtrace()` is absent on musl/Alpine (document or guard).
 
 ## Client-side drop reporting
 
