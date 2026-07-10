@@ -65,6 +65,8 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->person_profiles = PH_IDENTIFIED_ONLY;
     cfg->send_feature_flag_events = 1;
     cfg->preload_flags = 1;
+    cfg->max_batch_bytes = 1024 * 1024; /* 1 MiB; 0 disables the per-POST byte cap */
+    /* on_stats NULL + stats_interval_ms 0 => health snapshots off by default */
 }
 
 /* --- lifecycle -------------------------------------------------------- */
@@ -93,12 +95,19 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.before_send = cfg->before_send;
     g_ph.on_log = cfg->on_log;
     g_ph.user_data = cfg->user_data;
+    g_ph.on_stats = cfg->on_stats;
+    g_ph.stats_interval_ms = cfg->stats_interval_ms;
+    g_ph.max_batch_bytes = cfg->max_batch_bytes > 0 ? cfg->max_batch_bytes : 0;
 
     ph_mutex_init(&g_ph.lock);
     ph_mutex_init(&g_ph.flush_lock);
     ph_cond_init(&g_ph.idle_cond);
     ph_props_init(&g_ph.super);
     atomic_init(&g_ph.seq, 0);
+    atomic_init(&g_ph.st_sent, 0);
+    atomic_init(&g_ph.st_failed, 0);
+    atomic_init(&g_ph.st_retries, 0);
+    atomic_init(&g_ph.st_before_send_dropped, 0);
 
     if (cfg->distinct_id && cfg->distinct_id[0])
         ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, cfg->distinct_id);
@@ -226,12 +235,13 @@ static int derive_no_profile(int profile_mode) {
 /* profile_mode: -1 derive from policy, 0 force profile, 1 force anonymous.
  * `extra`/`extra_len`: optional pre-packed entries (e.g. the $exception_list
  * rawjson) appended after props/super/groups; pass NULL/0 when unused. */
-void ph__submit_event(int kind, unsigned char base_flags, const char *name,
+ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                          const char *did_override, const ph_props *props,
                          int profile_mode, int stamp_super_groups,
                          const char *extra, size_t extra_len) {
     uint64_t mono, seq;
-    if (!g_ph.enabled || !name) return;
+    if (!g_ph.enabled) return PH_ERR_DISABLED;
+    if (!name) return PH_ERR_BADARG;
 
     /* Hot-path reads: one cheap monotonic tick + one atomic sequence bump.
      * No wall clock, no RNG, no malloc. */
@@ -247,7 +257,7 @@ void ph__submit_event(int kind, unsigned char base_flags, const char *name,
         /* Token-bucket admission (product/exception events only). */
         if (!rate_limit_admit(kind, mono)) {
             ph_mutex_unlock(&g_ph.lock);
-            return;
+            return PH_ERR_RATE_LIMITED;
         }
         size_t name_len = strlen(name);
         size_t did_len = strlen(did);
@@ -298,13 +308,15 @@ void ph__submit_event(int kind, unsigned char base_flags, const char *name,
     ph_mutex_unlock(&g_ph.lock);
 
     if (ph_queue_size(&g_ph.queue) >= g_ph.flush_at) ph__sender_wake();
+    return PH_OK;
 }
 
 /* --- public capture surface ------------------------------------------- */
 
-void ph_capture(const char *event, const ph_props *props) {
-    if (!g_ph.enabled || !event || !event[0]) return;
-    ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
+ph_result ph_capture(const char *event, const ph_props *props) {
+    if (!g_ph.enabled) return PH_ERR_DISABLED;
+    if (!event || !event[0]) return PH_ERR_BADARG;
+    return ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {

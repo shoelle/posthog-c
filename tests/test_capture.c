@@ -42,6 +42,19 @@ static void init_test_sdk(void) {
     mock_install();
 }
 
+/* Captures the latest on_stats JSON for the stats test below. */
+static char g_stats_json[512];
+static int g_stats_calls;
+static void stats_cb(const char *json, size_t len, void *user) {
+    size_t n = strlen(json);
+    (void)len;
+    (void)user;
+    g_stats_calls++;
+    if (n >= sizeof(g_stats_json)) n = sizeof(g_stats_json) - 1;
+    memcpy(g_stats_json, json, n);
+    g_stats_json[n] = '\0';
+}
+
 void suite_capture(void) {
     /* --- basic capture roundtrip, anonymous by default --- */
     {
@@ -147,6 +160,87 @@ void suite_capture(void) {
         CHECK(ph_init(&cfg) == PH_OK);
         ph_capture("ignored", NULL); /* no-op */
         ph_flush(10);
+        ph_shutdown();
+    }
+
+    /* --- ph_capture returns the fate of the event --- */
+    {
+        init_test_sdk();
+        CHECK(ph_capture("ok", NULL) == PH_OK);
+        CHECK(ph_capture(NULL, NULL) == PH_ERR_BADARG);
+        CHECK(ph_capture("", NULL) == PH_ERR_BADARG);
+        ph_flush(2000);
+        ph_shutdown();
+        CHECK(ph_capture("after_shutdown", NULL) == PH_ERR_DISABLED); /* SDK off */
+    }
+
+    /* --- a rate-limited capture reports PH_ERR_RATE_LIMITED --- */
+    {
+        ph_config cfg;
+        int i, limited = 0;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_rl";
+        cfg.distinct_id = "anon-rl";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.rate_limit_per_sec = 1; /* burst 1: one token, then empty */
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        CHECK(ph_capture("first", NULL) == PH_OK); /* spends the token */
+        for (i = 0; i < 5; i++)
+            if (ph_capture("flood", NULL) == PH_ERR_RATE_LIMITED) limited = 1;
+        CHECK(limited);
+        ph_flush(2000);
+        ph_shutdown();
+    }
+
+    /* --- max_batch_bytes splits an over-cap batch into multiple POSTs --- */
+    {
+        ph_config cfg;
+        int i;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_bytes";
+        cfg.distinct_id = "anon-bytes";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.max_batch = 100;       /* count alone would keep these in one POST */
+        cfg.max_batch_bytes = 400; /* tiny: the serialized events blow past it */
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        for (i = 0; i < 8; i++) ph_capture("byte_cap_event", NULL);
+        ph_flush(2000);
+        CHECK(mock_batch_count() > 1); /* the byte cap forced a split */
+        ph_shutdown();
+    }
+
+    /* --- on_stats emits a periodic snapshot with a drop breakdown --- */
+    {
+        ph_config cfg;
+        int i;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_stats";
+        cfg.distinct_id = "anon-stats";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.rate_limit_per_sec = 1; /* generate some rate-limit drops */
+        cfg.stats_interval_ms = 30; /* emit quickly for the test */
+        cfg.on_stats = stats_cb;
+        g_stats_calls = 0;
+        g_stats_json[0] = '\0';
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        for (i = 0; i < 6; i++) ph_capture("flood", NULL); /* 1 sent, ~5 dropped */
+        sleep_ms(200);                                     /* let stats fire */
+        CHECK(g_stats_calls > 0);
+        CHECK_CONTAINS(g_stats_json, "\"queued\":");
+        CHECK_CONTAINS(g_stats_json, "\"dropped\":{");
+        CHECK_CONTAINS(g_stats_json, "\"rate_limited\":");
         ph_shutdown();
     }
 }

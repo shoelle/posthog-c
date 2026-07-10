@@ -58,15 +58,20 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
   slot. It reads only a cheap monotonic tick and bumps an atomic sequence - no
   wall clock, no RNG, no heap. The ring is a fixed array sized at init; when it
   fills, the oldest event is dropped and a counter bumped, so a producer that
-  outruns the network degrades gracefully instead of blocking.
+  outruns the network degrades gracefully instead of blocking. Drop-oldest biases
+  toward recency (the common case, where the sender keeps up, and the right bias
+  for crash/exception context); the tradeoff is that under *sustained* overload it
+  is the start of a session that gets shed, not the latest events.
 - **Packing.** A ring slot holds a compact `[name][distinct_id][packed props]`
   blob rather than a fat property struct, keeping the default 1000-event ring
   near ~2 MB instead of ~6 MB. The sender walks the blob to emit JSON. This is
   the one non-obvious internal format; see [`src/ph_queue.h`](src/ph_queue.h).
 - **The sender** parks on the queue's condition variable until it has
   `flush_at` events or `flush_interval_ms` elapses, then drains everything
-  present in `max_batch`-sized POSTs. `ph_flush` wakes it and blocks on a
-  drained handshake; `ph_shutdown` flushes, joins, and frees.
+  present in `max_batch`-sized POSTs (a batch whose serialized body would exceed
+  `max_batch_bytes` is split further, so no single POST trips the ingestion size
+  limit). `ph_flush` wakes it and blocks on a drained handshake; `ph_shutdown`
+  flushes, joins, and frees.
 - **Transport seam.** Delivery goes through a small vtable
   ([`ph_transport`](src/ph_internal.h)). The default is plaintext HTTP; tests
   swap in a capturing mock. TLS (v0.2) slotted in as a second transport, not a
@@ -114,7 +119,12 @@ customer's own integration reference:
   init - so even a long-queued offline event reports when it actually happened.
 - **Auto-properties** (`$lib`, `$lib_version`, `$lib_backend` = native/wasm,
   `$os`, `arch`, `release`) are stamped by the serializer, so dashboards slice
-  by version and platform with zero caller effort.
+  by version and platform with zero caller effort. This fixed set is posthog-c's
+  equivalent of an OpenTelemetry *Resource* (attributes attached to every
+  signal): `$lib`/`$lib_version` map to `telemetry.sdk.name`/`.version`, `$os` to
+  `os.type`, `arch` to `host.arch`, and `release` to `service.name` +
+  `service.version`. We keep the `$`-prefixed names PostHog's ingestion and
+  dashboards key on rather than the dotted OTel keys.
 - Reserved shapes (`$set`, `$groups`, `$group_set`, `$create_alias`) are
   produced by the serializer from typed helpers, so a caller can't get the JSON
   wrong by hand.
@@ -136,7 +146,10 @@ customer's own integration reference:
   caps product/exception events so a runaway loop can't flood ingestion. It
   refills from the monotonic tick capture already reads, so the hot path stays
   wall-clock/RNG/heap-free. Rate rejections + ring-overflow drops surface via
-  `ph_dropped_events()`.
+  `ph_dropped_events()`; `ph_capture` also returns `PH_ERR_RATE_LIMITED` for the
+  rejected call, and when `stats_interval_ms` is set the sender emits a periodic
+  `on_stats` JSON snapshot that breaks drops down by reason (rate-limited /
+  queue-overflow / before_send) alongside delivered / failed / retry counts.
 - **Server backpressure.** The client bucket caps what we *emit*; the sender
   also honors what the server *asks for*. On HTTP `429` (or `503` carrying a
   `Retry-After`, per RFC 9110) it parses the header - delay-seconds or an
@@ -204,6 +217,21 @@ customer's own integration reference:
    emit the gzip container. Native only: the wasm backend leaves compression to
    posthog-js. Chosen over miniz for being far smaller and compress-only, which
    is all we need.
+8. **Threading: background sender vs. call-and-pump (open).** Today the native
+   backend always spawns one background thread that owns all I/O, so `ph_capture`
+   just copies and returns. An alternative some engines prefer - and the model
+   Steamworks (`SteamAPI_RunCallbacks`) and the Discord Game SDK
+   (`Discord_RunCallbacks`) use - is *call-and-pump*: no hidden thread, with the
+   host driving the SDK's work from its own frame loop via a `ph_pump()` it calls
+   each tick. The catch is that their pump is nearly free only because a resident
+   companion process (the Steam client, the Discord app) does the network I/O
+   out-of-process; posthog-c owns the HTTP, so a pump that serialized and POSTed
+   inline would risk blowing a 16 ms frame. A real pump mode would therefore have
+   to drive *non-blocking* I/O under a per-call time budget; otherwise it
+   degrades to `ph_flush()` at a frame seam (which already exists). Recorded as a
+   considered alternative, not committed - the background thread is the right
+   default for most hosts, and the crash handler needs process-global state
+   regardless.
 
 ## 8. Native crash capture (`signal_crash`, v0.6)
 

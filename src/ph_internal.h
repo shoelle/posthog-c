@@ -143,6 +143,7 @@ typedef struct ph_ctx {
     int flush_at;
     int flush_interval_ms;
     int max_batch;
+    int max_batch_bytes; /* 0 = no per-POST byte cap */
     int max_queue;
     int request_timeout_ms;
     int max_retries;
@@ -151,6 +152,8 @@ typedef struct ph_ctx {
     ph_before_send_fn before_send;
     ph_log_fn on_log;
     void *user_data;
+    ph_stats_fn on_stats;
+    int stats_interval_ms;
 
     /* Privacy denylist: keys stripped from every event pre-send. */
     char denylist[PH_MAX_DENYLIST][PH_KEY_CAP];
@@ -163,6 +166,13 @@ typedef struct ph_ctx {
     double rl_tokens;       /* current tokens */
     uint64_t rl_last_mono;  /* last refill tick */
     uint64_t rl_dropped;    /* events rejected by the limiter */
+
+    /* Delivery counters, owned by the sender thread (atomic for a future
+     * cross-thread getter). Feed the on_stats health snapshot. */
+    atomic_uint_least64_t st_sent;                /* events delivered (2xx) */
+    atomic_uint_least64_t st_failed;              /* events lost to send failure/reject */
+    atomic_uint_least64_t st_retries;             /* batch retry attempts */
+    atomic_uint_least64_t st_before_send_dropped; /* events dropped by before_send */
 
     /* Identity, super properties, and group scoping (all guarded by `lock`,
      * snapshotted into each event at capture time so the sender needs no
@@ -259,7 +269,7 @@ void ph_serialize_props_object(const ph_props *p, struct ph_strbuf *out);
  * g_ph.lock and pack a self-contained event into the ring. Defined in ph_core.c;
  * the exception (ph_exception.c) and feature-flag (ph_flags.c) emitters call it.
  * See ph_core.c for the arg contract (profile_mode, extra/extra_len). */
-void ph__submit_event(int kind, unsigned char base_flags, const char *name,
+ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                       const char *did_override, const ph_props *props,
                       int profile_mode, int stamp_super_groups,
                       const char *extra, size_t extra_len);

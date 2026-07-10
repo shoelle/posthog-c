@@ -137,17 +137,19 @@ ph_result ph_init(const ph_config *cfg) {
     return (g_enabled && g_identity_ok) ? PH_OK : PH_ERR;
 }
 
-void ph_capture(const char *event, const ph_props *props) {
+ph_result ph_capture(const char *event, const ph_props *props) {
     char *json;
     ph_props clean;
-    if (!g_enabled || !g_identity_ok || !event || !event[0]) return;
-    if (!scrub_props(event, props, &clean)) return;
+    if (!g_enabled || !g_identity_ok) return PH_ERR_DISABLED;
+    if (!event || !event[0]) return PH_ERR_BADARG;
+    if (!scrub_props(event, props, &clean)) return PH_OK; /* before_send dropped it */
     json = props_to_json(&clean);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.capture(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
     }, event, json ? json : "{}");
     free(json);
+    return PH_OK;
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {

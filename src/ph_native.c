@@ -298,8 +298,10 @@ static int scrub_one(ph_event *e, int run_before_send) {
 
     for (i = 0; i < g_ph.denylist_count; i++) ph_props_remove_key(&props, g_ph.denylist[i]);
     if (run_before_send && g_ph.before_send &&
-        !g_ph.before_send(name, &props, g_ph.user_data))
+        !g_ph.before_send(name, &props, g_ph.user_data)) {
+        atomic_fetch_add(&g_ph.st_before_send_dropped, (uint_least64_t)1);
         return 0;
+    }
 
     nb = ph_pack_props(&props, tmp, sizeof(tmp));
     if (plen && nb + plen <= sizeof(tmp)) {
@@ -397,59 +399,82 @@ static void spill_queued(ph_event *scratch) {
 #define PH_RETRY_MAX_MS 2000
 #endif
 
-static void send_batch(ph_event *evs, int n) {
-    ph_strbuf body;
+/* POST one already-serialized body, retrying failures a retry can plausibly fix:
+ * 5xx, 408/timeouts, and network errors (status < 0). 2xx delivered; a
+ * deterministic 4xx reject (bad key/body) won't change; a 429 (or a 503 carrying
+ * Retry-After) is server backpressure - post_and_note arms the limiter and we
+ * stop rather than hammer the throttle. Exponential backoff between attempts,
+ * interruptible on shutdown. `n` is the event count, for diagnostics + the
+ * delivery counters. On permanent failure the body spills (if offline_path is
+ * set) or is dropped. */
+static void send_one(const char *body, size_t len, int n) {
     int status = -1;
     int attempt, attempts;
 
-    n = scrub_events(evs, n);
-    if (n == 0) return; /* every event was scrubbed away */
-
-    ph_strbuf_init(&body);
-    ph_serialize_batch(&g_ph, evs, n, &body);
-    if (body.oom) {
-        ph_strbuf_free(&body);
-        ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d events", n);
-        return;
-    }
-
-    /* Retry only failures a retry can plausibly fix: 5xx, 408/timeouts, and
-     * network errors (status < 0). 2xx succeeded; deterministic 4xx rejects
-     * (bad key/body) won't change. A 429 (or a 503 carrying Retry-After) is
-     * server backpressure: post_and_note arms the limiter, and we stop retrying
-     * rather than hammering the throttle. Exponential backoff between attempts,
-     * interruptible on shutdown. */
     attempts = g_ph.max_retries >= 0 ? g_ph.max_retries + 1 : 1;
     for (attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0) {
             int shift = attempt - 1 > 6 ? 6 : attempt - 1; /* clamp: avoid overflow */
             int backoff = PH_RETRY_BASE_MS << shift;
+            atomic_fetch_add(&g_ph.st_retries, (uint_least64_t)1);
             if (backoff > PH_RETRY_MAX_MS) backoff = PH_RETRY_MAX_MS;
             if (sender_backoff_wait(backoff)) break; /* shutdown requested */
         }
-        status = post_and_note(body.data ? body.data : "", body.len);
+        status = post_and_note(body, len);
         if (status >= 200 && status < 300) break; /* delivered */
         if (is_permanent_reject(status)) break; /* client error: won't change */
         if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break; /* backpressure */
     }
-    if (status < 200 || status >= 300) {
-        if (is_permanent_reject(status)) {
-            /* Deterministic client error (bad key/body): spilling would just
-             * re-POST and fail on every drain, blocking the queue. Drop it. */
-            ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
-                                "(client error, will not retry)", status, n);
-        } else if (g_ph.offline_path[0]) {
-            offline_spill(body.data ? body.data : "", body.len);
-            ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
-        } else {
-            ph_log(PH_LOG_WARN,
-                   "batch POST failed (status %d); %d events dropped "
-                   "(set offline_path to persist failed batches)",
-                   status, n);
-        }
+    if (status >= 200 && status < 300) {
+        atomic_fetch_add(&g_ph.st_sent, (uint_least64_t)n);
+    } else if (is_permanent_reject(status)) {
+        /* Deterministic client error (bad key/body): spilling would just re-POST
+         * and fail on every drain, blocking the queue. Drop it. */
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
+                            "(client error, will not retry)", status, n);
+    } else if (g_ph.offline_path[0]) {
+        offline_spill(body, len);
+        ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
+    } else {
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_WARN,
+               "batch POST failed (status %d); %d events dropped "
+               "(set offline_path to persist failed batches)", status, n);
     }
+}
 
+/* Serialize evs[0..n) (already scrubbed) and POST it. If the serialized body
+ * would exceed max_batch_bytes, split the run in half and recurse so no single
+ * POST exceeds the cap - PostHog rejects oversized bodies. A lone event over the
+ * cap is sent as-is (it can't be split). Splits are rare, so the extra
+ * serialization is paid only when a batch is genuinely too big. */
+static void send_run(ph_event *evs, int n) {
+    ph_strbuf body;
+
+    ph_strbuf_init(&body);
+    ph_serialize_batch(&g_ph, evs, n, &body);
+    if (body.oom) {
+        ph_strbuf_free(&body);
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d events", n);
+        return;
+    }
+    if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes && n > 1) {
+        int half = n / 2;
+        ph_strbuf_free(&body);
+        send_run(evs, half);
+        send_run(evs + half, n - half);
+        return;
+    }
+    send_one(body.data ? body.data : "", body.len, n);
     ph_strbuf_free(&body);
+}
+
+static void send_batch(ph_event *evs, int n) {
+    n = scrub_events(evs, n); /* strip denylist / run before_send, compacting drops */
+    if (n == 0) return;       /* every event was scrubbed away */
+    send_run(evs, n);
 }
 
 /* Drain: replay any spilled batches first (preserving order across a
@@ -486,8 +511,41 @@ static void drain(ph_event *scratch, int final) {
     ph_mutex_unlock(&g_ph.flush_lock);
 }
 
+/* Build the on_stats health snapshot and hand it to the callback. Sender-thread
+ * only. Compact single-line JSON: queue depth + cap, delivered/failed/retried,
+ * and drops broken down by reason. Numbers only, so a fixed stack buffer fits. */
+static void emit_stats(void) {
+    char buf[320];
+    uint64_t queued, rl_dropped, ring_dropped, sent, failed, retries, bs, total;
+    int len;
+
+    if (!g_ph.on_stats) return;
+    queued = (uint64_t)ph_queue_size(&g_ph.queue);
+    ring_dropped = ph_queue_dropped(&g_ph.queue);
+    ph_mutex_lock(&g_ph.lock);
+    rl_dropped = g_ph.rl_dropped;
+    ph_mutex_unlock(&g_ph.lock);
+    sent = atomic_load(&g_ph.st_sent);
+    failed = atomic_load(&g_ph.st_failed);
+    retries = atomic_load(&g_ph.st_retries);
+    bs = atomic_load(&g_ph.st_before_send_dropped);
+    total = rl_dropped + ring_dropped + bs + failed;
+
+    len = snprintf(buf, sizeof(buf),
+        "{\"queued\":%llu,\"queue_cap\":%d,\"sent\":%llu,\"failed\":%llu,"
+        "\"retries\":%llu,\"dropped\":{\"total\":%llu,\"rate_limited\":%llu,"
+        "\"queue_overflow\":%llu,\"before_send\":%llu}}",
+        (unsigned long long)queued, g_ph.max_queue,
+        (unsigned long long)sent, (unsigned long long)failed,
+        (unsigned long long)retries, (unsigned long long)total,
+        (unsigned long long)rl_dropped, (unsigned long long)ring_dropped,
+        (unsigned long long)bs);
+    if (len > 0) g_ph.on_stats(buf, (size_t)len, g_ph.user_data);
+}
+
 static void sender_main(void *arg) {
     ph_event *scratch;
+    uint64_t last_stats;
     (void)arg;
 
     /* One heap block reused for every batch; sized once at start. */
@@ -496,16 +554,29 @@ static void sender_main(void *arg) {
         ph_log(PH_LOG_ERROR, "sender scratch alloc failed; sender exiting");
         return;
     }
+    last_stats = ph_now_mono_ns();
 
     for (;;) {
         int stop, refetch;
-        ph_queue_wait(&g_ph.queue, g_ph.flush_at, g_ph.flush_interval_ms);
+        /* Wake at least as often as the stats interval so on_stats fires on time
+         * even while the queue is idle (otherwise we only wake every flush). */
+        int wait_ms = g_ph.flush_interval_ms;
+        if (g_ph.stats_interval_ms > 0 && g_ph.stats_interval_ms < wait_ms)
+            wait_ms = g_ph.stats_interval_ms;
+        ph_queue_wait(&g_ph.queue, g_ph.flush_at, wait_ms);
         ph_mutex_lock(&g_ph.flush_lock);
         refetch = g_ph.flags_refetch;
         g_ph.flags_refetch = 0;
         ph_mutex_unlock(&g_ph.flush_lock);
         if (refetch) ph__flags_fetch(); /* re-evaluate flags after ph_identify */
         drain(scratch, 0);
+        if (g_ph.on_stats && g_ph.stats_interval_ms > 0) {
+            uint64_t now = ph_now_mono_ns();
+            if (now - last_stats >= (uint64_t)g_ph.stats_interval_ms * 1000000ull) {
+                emit_stats();
+                last_stats = now;
+            }
+        }
         ph_mutex_lock(&g_ph.flush_lock);
         stop = g_ph.stop;
         ph_mutex_unlock(&g_ph.flush_lock);

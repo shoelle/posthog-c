@@ -68,7 +68,8 @@ typedef enum ph_result {
     PH_ERR_DISABLED = -2,  /* SDK not enabled / not initialized */
     PH_ERR_FULL = -3,      /* fixed buffer full; item dropped */
     PH_ERR_BADARG = -4,    /* NULL or invalid argument */
-    PH_ERR_TRUNCATED = -5  /* stored, but a key/value was truncated to fit */
+    PH_ERR_TRUNCATED = -5,    /* stored, but a key/value was truncated to fit */
+    PH_ERR_RATE_LIMITED = -6  /* capture rejected by the token-bucket rate limiter */
 } ph_result;
 
 /* --- Person-profile policy --------------------------------------
@@ -154,6 +155,13 @@ typedef int (*ph_before_send_fn)(const char *event, ph_props *props, void *user)
 /* Optional diagnostics sink for drops/retries/HTTP errors. NULL = silent. */
 typedef void (*ph_log_fn)(ph_log_level level, const char *msg, void *user);
 
+/* Optional periodic health snapshot. When ph_config.stats_interval_ms > 0, the
+ * sender thread calls this every ~stats_interval_ms with a compact JSON blob:
+ * queue depth, delivered/failed/retried counts, and drops broken down by reason
+ * (rate_limited / queue_overflow / before_send). `json` is valid only for the
+ * duration of the call. Fired on the sender thread, never the caller thread. */
+typedef void (*ph_stats_fn)(const char *json, size_t len, void *user);
+
 /* --- Configuration ----------------------------------------------
  *
  * POD config passed to ph_init(). Zero-initialize it (memset or {0}) and set
@@ -202,6 +210,15 @@ typedef struct ph_config {
                         * launch. Default 0 = off (opt-in - it installs
                         * process-global handlers). Requires offline_path.
                         * Native only; wasm ignores it. */
+
+    /* New fields are appended here (never reordered) to keep the ABI additive. */
+    int max_batch_bytes;   /* cap on serialized bytes per POST: a batch that would
+                            * exceed it is split into several POSTs. 0 = no byte
+                            * cap (count only). ph_config_defaults sets 1 MiB.
+                            * Guards against oversized-body 413s. Native only. */
+    ph_stats_fn on_stats;  /* periodic health snapshot; NULL = off (see ph_stats_fn) */
+    int stats_interval_ms; /* emit on_stats every ~N ms; 0 = disabled (default).
+                            * Native only; wasm ignores it. */
 } ph_config;
 
 /*
@@ -253,8 +270,14 @@ ph_result ph_init(const ph_config *cfg);
  * no malloc on the caller thread. `props` may be NULL for a bare event.
  * Oversized keys/values are truncated; over-capacity events drop properties
  * and bump an internal counter rather than borrowing caller memory.
+ *
+ * Returns the fate of this call's event: PH_OK if accepted into the ring,
+ * PH_ERR_DISABLED if the SDK is off, PH_ERR_BADARG for a NULL/empty name, or
+ * PH_ERR_RATE_LIMITED if the token bucket rejected it. Ring saturation still
+ * returns PH_OK (your event is accepted; an older one is evicted) and surfaces
+ * via ph_dropped_events()/on_stats, not here. Most callers ignore the return.
  */
-void ph_capture(const char *event, const ph_props *props);
+ph_result ph_capture(const char *event, const ph_props *props);
 
 /*
  * Identify the current user (sign-in). Emits $identify, applies set_props as

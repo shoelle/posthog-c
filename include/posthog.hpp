@@ -42,8 +42,8 @@ inline const char *version() { return ph_version(); }
 
 inline ph_result init(const ph_config &cfg) { return ph_init(&cfg); }
 
-inline void capture(const char *event) { ph_capture(event, nullptr); }
-inline void capture(const char *event, const Props &props) { ph_capture(event, props.raw()); }
+inline ph_result capture(const char *event) { return ph_capture(event, nullptr); }
+inline ph_result capture(const char *event, const Props &props) { return ph_capture(event, props.raw()); }
 
 inline void identify(const char *distinct_id) { ph_identify(distinct_id, nullptr); }
 inline void identify(const char *distinct_id, const Props &set_props) { ph_identify(distinct_id, set_props.raw()); }
