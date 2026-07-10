@@ -61,12 +61,35 @@ void suite_jsonparse(void) {
 
     /* malformed inputs return NULL, not a partial tree */
     {
-        const char *bad1 = "{\"a\":}";
-        const char *bad2 = "{unquoted:1}";
-        ph_jv *v1 = ph_jv_parse(bad1, strlen(bad1));
-        ph_jv *v2 = ph_jv_parse(bad2, strlen(bad2));
-        CHECK(v1 == NULL);
-        CHECK(v2 == NULL);
+        static const char *bad[] = {
+            "{\"a\":}", "{unquoted:1}", "01", "+1", "1.", "1e", "1 trailing",
+            "\"raw\nnewline\"", "\"\\uD800\"", "\"\\uDC00\"", "\"\\u0000\"",
+            "[1,]"
+        };
+        size_t i;
+        for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            ph_jv *v = ph_jv_parse(bad[i], strlen(bad[i]));
+            CHECK_MSG(v == NULL, "malformed JSON accepted: %s", bad[i]);
+            ph_jv_free(v);
+        }
+        {
+            const char invalid_utf8[] = {'"', (char)0xC0, (char)0xAF, '"'};
+            ph_jv *v = ph_jv_parse(invalid_utf8, sizeof(invalid_utf8));
+            CHECK(v == NULL);
+            ph_jv_free(v);
+        }
+    }
+
+    /* JSON number grammar and conversion are independent of LC_NUMERIC. */
+    {
+        const char *s = "[-0.5,1.25e2,4E-2]";
+        ph_jv *v = ph_jv_parse(s, strlen(s));
+        CHECK(v != NULL);
+        CHECK(ph_jv_num(ph_jv_at(v, 0)) == -0.5);
+        CHECK(ph_jv_num(ph_jv_at(v, 1)) == 125.0);
+        CHECK(ph_jv_num(ph_jv_at(v, 2)) > 0.039999 &&
+              ph_jv_num(ph_jv_at(v, 2)) < 0.040001);
+        ph_jv_free(v);
     }
 
     /* deeply nested input is rejected at the depth cap, not a stack overflow

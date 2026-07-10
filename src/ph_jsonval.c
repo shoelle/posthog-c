@@ -1,6 +1,7 @@
 #include "ph_jsonval.h"
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 struct ph_jv {
@@ -95,6 +96,44 @@ static int utf8_encode(unsigned cp, char *out) {
     return 4;
 }
 
+static int utf8_valid(const unsigned char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = s[i];
+        if (c < 0x80) {
+            i++;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            if (i + 1 >= n || (s[i + 1] & 0xC0) != 0x80) return 0;
+            i += 2;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            if (i + 2 >= n || (s[i + 2] & 0xC0) != 0x80) return 0;
+            if (c == 0xE0) {
+                if (s[i + 1] < 0xA0 || s[i + 1] > 0xBF) return 0;
+            } else if (c == 0xED) {
+                if (s[i + 1] < 0x80 || s[i + 1] > 0x9F) return 0;
+            } else if ((s[i + 1] & 0xC0) != 0x80) {
+                return 0;
+            }
+            i += 3;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            if (i + 3 >= n || (s[i + 2] & 0xC0) != 0x80 ||
+                (s[i + 3] & 0xC0) != 0x80)
+                return 0;
+            if (c == 0xF0) {
+                if (s[i + 1] < 0x90 || s[i + 1] > 0xBF) return 0;
+            } else if (c == 0xF4) {
+                if (s[i + 1] < 0x80 || s[i + 1] > 0x8F) return 0;
+            } else if ((s[i + 1] & 0xC0) != 0x80) {
+                return 0;
+            }
+            i += 4;
+        } else {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int hex4(const char *p, unsigned *out) {
     unsigned v = 0;
     int i;
@@ -126,12 +165,20 @@ static char *parse_string_raw(cursor *c) {
         unsigned char ch = (unsigned char)*p;
         if (ch == '"') {
             p++;
+            if (!utf8_valid((const unsigned char *)out, len)) {
+                free(out);
+                return NULL;
+            }
             c->p = p;
             out[len] = '\0';
             return out;
         }
         if (len + 4 >= cap) {
             char *n2;
+            if (cap > SIZE_MAX / 2) {
+                free(out);
+                return NULL;
+            }
             cap *= 2;
             n2 = (char *)realloc(out, cap);
             if (!n2) {
@@ -167,7 +214,14 @@ static char *parse_string_raw(cursor *c) {
                             hex4(p + 2, &lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
                             cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
                             p += 6;
+                        } else {
+                            free(out);
+                            return NULL;
                         }
+                    }
+                    if (cp == 0 || (cp >= 0xDC00 && cp <= 0xDFFF)) {
+                        free(out);
+                        return NULL;
                     }
                     len += (size_t)utf8_encode(cp, out + len);
                     break;
@@ -176,9 +230,12 @@ static char *parse_string_raw(cursor *c) {
                     free(out);
                     return NULL;
             }
-        } else {
+        } else if (ch >= 0x20) {
             out[len++] = (char)ch;
             p++;
+        } else {
+            free(out);
+            return NULL;
         }
     }
     free(out);
@@ -199,25 +256,61 @@ static ph_jv *parse_string(cursor *c) {
 }
 
 static ph_jv *parse_number(cursor *c) {
-    char buf[64];
-    const char *start = c->p;
-    size_t n;
+    const char *p = c->p;
+    double value = 0.0;
+    double factor = 0.1;
+    int negative = 0, exp_negative = 0, exp = 0;
     ph_jv *v;
-    while (c->p < c->end) {
-        char ch = *c->p;
-        if ((ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' ||
-            ch == 'e' || ch == 'E')
-            c->p++;
-        else
-            break;
+
+    if (p < c->end && *p == '-') {
+        negative = 1;
+        p++;
     }
-    n = (size_t)(c->p - start);
-    if (n == 0 || n >= sizeof(buf)) return NULL;
-    memcpy(buf, start, n);
-    buf[n] = '\0';
+    if (p >= c->end) return NULL;
+    if (*p == '0') {
+        p++;
+        if (p < c->end && *p >= '0' && *p <= '9') return NULL;
+    } else if (*p >= '1' && *p <= '9') {
+        do {
+            value = value * 10.0 + (double)(*p - '0');
+            p++;
+        } while (p < c->end && *p >= '0' && *p <= '9');
+    } else {
+        return NULL;
+    }
+
+    if (p < c->end && *p == '.') {
+        p++;
+        if (p >= c->end || *p < '0' || *p > '9') return NULL;
+        do {
+            value += (double)(*p - '0') * factor;
+            factor *= 0.1;
+            p++;
+        } while (p < c->end && *p >= '0' && *p <= '9');
+    }
+
+    if (p < c->end && (*p == 'e' || *p == 'E')) {
+        p++;
+        if (p < c->end && (*p == '+' || *p == '-')) {
+            exp_negative = *p == '-';
+            p++;
+        }
+        if (p >= c->end || *p < '0' || *p > '9') return NULL;
+        do {
+            if (exp < 400) {
+                exp = exp * 10 + (*p - '0');
+                if (exp > 400) exp = 400;
+            }
+            p++;
+        } while (p < c->end && *p >= '0' && *p <= '9');
+    }
+
+    while (exp-- > 0) value = exp_negative ? value / 10.0 : value * 10.0;
+    if (negative) value = -value;
     v = node_new(PH_JV_NUM);
     if (!v) return NULL;
-    v->u.num = strtod(buf, NULL);
+    v->u.num = value;
+    c->p = p;
     return v;
 }
 
@@ -361,7 +454,12 @@ static ph_jv *parse_value(cursor *c, int depth) {
         case 't':
         case 'f':
         case 'n': return parse_literal(c);
-        default: return parse_number(c);
+        case '-':
+        case '0': case '1': case '2': case '3': case '4':
+        case '5': case '6': case '7': case '8': case '9':
+            return parse_number(c);
+        default:
+            return NULL;
     }
 }
 
@@ -372,7 +470,13 @@ ph_jv *ph_jv_parse(const char *s, size_t n) {
     c.p = s;
     c.end = s + n;
     v = parse_value(&c, 0);
-    return v; /* trailing content is tolerated (responses may have none) */
+    if (!v) return NULL;
+    skip_ws(&c);
+    if (c.p != c.end) {
+        ph_jv_free(v);
+        return NULL;
+    }
+    return v;
 }
 
 /* --- accessors -------------------------------------------------------- */

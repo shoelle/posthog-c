@@ -17,7 +17,7 @@ relevant native/WASM verification are green.
   `errorsWhileComputingFlags` responses, and do not erase the cache on a
   quota-limited response. Keep `$feature_flag_called` dedupe keyed by
   `(distinct_id, flag, value)` across ordinary reloads.
-- [ ] **Make JSON number encoding and parsing locale-independent.** The host may
+- [x] **Make JSON number encoding and parsing locale-independent.** The host may
   call `setlocale(LC_NUMERIC, ...)`; doubles must still serialize with `.` and
   parse according to JSON rather than the process locale. Cover native and WASM
   under a comma-decimal locale, and tighten the parser to reject malformed
