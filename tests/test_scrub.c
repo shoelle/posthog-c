@@ -6,6 +6,7 @@
 #include "mock_transport.h"
 #include "test_util.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void base_cfg(ph_config *cfg) {
@@ -116,6 +117,62 @@ void suite_scrub(void) {
         CHECK_NOT_CONTAINS(mock_batch(0), "\"token\"");
         CHECK_NOT_CONTAINS(mock_batch(0), "xyz");
         CHECK_NOT_CONTAINS(mock_batch(0), "abc");
+        ph_shutdown();
+    }
+
+    /* --- identify/group caller properties use the same privacy pass --- */
+    {
+        ph_config cfg;
+        ph_props identify, group;
+        static const char *deny[] = {"secret", "token"};
+        base_cfg(&cfg);
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 2;
+        start(&cfg);
+
+        ph_props_init(&identify);
+        ph_props_set_str(&identify, "secret", "identify-pii");
+        ph_props_set_str(&identify, "plan", "pro");
+        ph_identify("privacy-user", &identify);
+
+        ph_props_init(&group);
+        ph_props_set_str(&group, "token", "group-pii");
+        ph_props_set_int(&group, "seats", 12);
+        ph_group("company", "privacy-co", &group);
+
+        ph_flush(2000);
+        CHECK_CONTAINS(mock_batch(0), "\"$set\":{\"plan\":\"pro\"}");
+        CHECK_CONTAINS(mock_batch(0), "\"$group_set\":{\"seats\":12}");
+        CHECK_NOT_CONTAINS(mock_batch(0), "identify-pii");
+        CHECK_NOT_CONTAINS(mock_batch(0), "group-pii");
+        ph_shutdown();
+    }
+
+    /* --- privacy does not let super props crowd out explicit event props --- */
+    {
+        ph_config cfg;
+        ph_props super, event;
+        static const char *deny[] = {"never-present"};
+        int i;
+        base_cfg(&cfg);
+        cfg.property_denylist = deny; /* force the unpack/scrub/repack path */
+        cfg.property_denylist_count = 1;
+        start(&cfg);
+        ph_props_init(&super);
+        for (i = 0; i < PH_MAX_PROPS; i++) {
+            char key[16];
+            snprintf(key, sizeof(key), "super_%d", i);
+            ph_props_set_int(&super, key, i);
+        }
+        ph_register(&super);
+        ph_props_init(&event);
+        ph_props_set_str(&event, "explicit_a", "kept-a");
+        ph_props_set_str(&event, "explicit_b", "kept-b");
+        ph_capture("explicit_priority", &event);
+        ph_flush(2000);
+        CHECK_CONTAINS(mock_batch(0), "\"explicit_a\":\"kept-a\"");
+        CHECK_CONTAINS(mock_batch(0), "\"explicit_b\":\"kept-b\"");
+        CHECK_NOT_CONTAINS(mock_batch(0), "\"super_23\":23");
         ph_shutdown();
     }
 

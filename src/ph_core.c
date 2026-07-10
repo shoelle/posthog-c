@@ -343,6 +343,7 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
         size_t off, bl;
         int no_profile;
         ph_event *e;
+        ph_props merged;
 
         no_profile = derive_no_profile(profile_mode);
 
@@ -365,17 +366,19 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
 
         /* Raw structured extras (currently $exception_list) are prioritized so
          * diagnostic payloads survive even when user/super props crowd the fixed
-         * blob. Super props come before explicit event props so callers win on
-         * duplicate scalar keys (PostHog ingestion takes last-wins). */
+         * blob. Explicit event props are merged ahead of non-shadowed super
+         * props so callers win while the fixed public cap stays deterministic. */
         bl = 0;
         if (extra && extra_len && extra_len <= cap - off) {
             memcpy(e->data + off + bl, extra, extra_len);
             bl += extra_len;
         }
-        if (stamp_super_groups)
-            bl += ph_pack_props(&g_ph.super, e->data + off + bl, cap - off - bl);
-        if (props)
+        if (stamp_super_groups) {
+            ph_props_merge(&merged, props, &g_ph.super);
+            bl += ph_pack_props(&merged, e->data + off + bl, cap - off - bl);
+        } else if (props) {
             bl += ph_pack_props(props, e->data + off + bl, cap - off - bl);
+        }
         if (stamp_super_groups) {
             int gi;
             for (gi = 0; gi < g_ph.group_count; gi++)

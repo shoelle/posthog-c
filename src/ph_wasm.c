@@ -51,13 +51,9 @@ static int denylist_has(const char *key) {
     return ph_denylist_has(g_denylist, g_denylist_count, key);
 }
 
-static int scrub_props(const char *event, const ph_props *in, ph_props *out) {
-    int i;
-    ph_props_init(out);
-    for (i = 0; i < g_super.count; i++) ph_copy_prop_value(out, &g_super.items[i]);
-    if (in) {
-        for (i = 0; i < in->count; i++) ph_copy_prop_value(out, &in->items[i]);
-    }
+static int scrub_props(const char *event, const ph_props *in, int include_super,
+                       ph_props *out) {
+    ph_props_merge(out, in, include_super ? &g_super : NULL);
     apply_denylist(out);
     if (g_before_send) {
         int keep;
@@ -155,7 +151,7 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     if (!event || !event[0]) return PH_ERR_BADARG;
     truncated = strlen(event) >= sizeof(event_capped);
     ph_copy_capped(event_capped, sizeof(event_capped), event);
-    if (!scrub_props(event_capped, props, &clean)) return PH_OK; /* before_send dropped it */
+    if (!scrub_props(event_capped, props, 1, &clean)) return PH_OK; /* before_send dropped it */
     json = props_to_json(&clean);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
@@ -168,9 +164,11 @@ ph_result ph_capture(const char *event, const ph_props *props) {
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
     char *json;
     char id_capped[PH_DISTINCT_ID_CAP];
+    ph_props clean;
     if (!g_enabled || !g_identity_ok || !distinct_id || !distinct_id[0]) return;
     ph_copy_capped(id_capped, sizeof(id_capped), distinct_id);
-    json = props_to_json(set_props);
+    if (!scrub_props("$identify", set_props, 0, &clean)) return;
+    json = props_to_json(&clean);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.identify(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
@@ -181,9 +179,17 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
 void ph_alias(const char *new_id, const char *old_id) {
     char new_capped[PH_DISTINCT_ID_CAP];
     char old_capped[PH_DISTINCT_ID_CAP];
+    ph_props alias_props, clean;
+    const char *clean_alias;
     if (!g_enabled || !g_identity_ok || !new_id || !old_id) return;
     ph_copy_capped(new_capped, sizeof(new_capped), new_id);
     ph_copy_capped(old_capped, sizeof(old_capped), old_id);
+    ph_props_init(&alias_props);
+    ph_props_set_str(&alias_props, "alias", new_capped);
+    if (!scrub_props("$create_alias", &alias_props, 0, &clean)) return;
+    clean_alias = ph_props_find_last_str(&clean, "alias");
+    if (!clean_alias || !clean_alias[0]) return;
+    ph_copy_capped(new_capped, sizeof(new_capped), clean_alias);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.alias(UTF8ToString($0), UTF8ToString($1));
@@ -202,10 +208,12 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     char *json;
     char type_capped[PH_KEY_CAP];
     char key_capped[PH_KEY_CAP];
+    ph_props clean;
     if (!g_enabled || !g_identity_ok || !type || !key) return;
     ph_copy_capped(type_capped, sizeof(type_capped), type);
     ph_copy_capped(key_capped, sizeof(key_capped), key);
-    json = props_to_json(set_props);
+    if (!scrub_props("$groupidentify", set_props, 0, &clean)) return;
+    json = props_to_json(&clean);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.group(UTF8ToString($0), UTF8ToString($1),
@@ -239,22 +247,19 @@ void ph_unregister(const char *key) {
 
 void ph_capture_exception(const ph_exception *ex) {
     char *json;
-    ph_props clean;
+    ph_props base, clean;
     char type[PH_VAL_CAP];
     char message[PH_VAL_CAP];
     const char *v;
     if (!g_enabled || !g_identity_ok || !ex) return;
-    ph_props_init(&clean);
-    {
-        int i;
-        for (i = 0; i < g_super.count; i++) ph_copy_prop_value(&clean, &g_super.items[i]);
-    }
-    ph_props_set_str(&clean, "$exception_type", ex->type ? ex->type : "Error");
-    ph_props_set_str(&clean, "$exception_message", ex->message ? ex->message : "");
+    ph_props_init(&base);
+    ph_props_set_str(&base, "$exception_type", ex->type ? ex->type : "Error");
+    ph_props_set_str(&base, "$exception_message", ex->message ? ex->message : "");
     if (ex->extra) {
         int i;
-        for (i = 0; i < ex->extra->count; i++) ph_copy_prop_value(&clean, &ex->extra->items[i]);
+        for (i = 0; i < ex->extra->count; i++) ph_copy_prop_value(&base, &ex->extra->items[i]);
     }
+    ph_props_merge(&clean, &base, &g_super);
     apply_denylist(&clean);
     if (denylist_has("type")) ph_props_remove_key(&clean, "$exception_type");
     if (denylist_has("message")) ph_props_remove_key(&clean, "$exception_message");

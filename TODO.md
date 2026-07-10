@@ -51,7 +51,7 @@ relevant native/WASM verification are green.
   rename; secure POSIX directories/files as 0700/0600; document that the file is
   plaintext, contains the project token and event data, and is single-process
   unless file locking is added.
-- [ ] **Apply privacy hooks to every caller-controlled property.** Identify
+- [x] **Apply privacy hooks to every caller-controlled property.** Identify
   `$set` and group `$group_set` values currently bypass the denylist and
   `before_send` on both backends. Preserve explicit event properties when the
   combined super/event set exceeds `PH_MAX_PROPS`; enabling privacy must not

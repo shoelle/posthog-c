@@ -54,9 +54,12 @@ check(!calls.some((c) => c.event === "drop_me"), "before_send dropped drop_me");
 const id = calls.find((c) => c.fn === "identify");
 check(id && id.id === "acct-9", "identify id=acct-9");
 check(id && id.props && id.props.plan === "pro", "identify $set prop plan=pro");
+check(id && id.props && !("token" in id.props), "identify props passed through denylist");
 
 const g = calls.find((c) => c.fn === "group");
 check(g && g.type === "game" && g.key === "asteroids", "group game/asteroids");
+check(g && g.props && g.props.players === 4, "group properties preserved");
+check(g && g.props && !("token" in g.props), "group props passed through denylist");
 
 check(calls.some((c) => c.event === "missing_fallback_true"), "missing flag honored fallback=true");
 check(calls.some((c) => c.event === "false_flag_ok"), "false flag resolved as PH_OK value");

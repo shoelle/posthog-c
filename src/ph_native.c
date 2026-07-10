@@ -332,16 +332,14 @@ static int scrub_events(ph_event *evs, int n) {
     int i, out = 0;
     if (!g_ph.before_send && g_ph.denylist_count == 0) return n;
     for (i = 0; i < n; i++) {
-        int kind = evs[i].kind;
-        if (kind == PH_EV_CAPTURE || kind == PH_EV_EXCEPTION) {
-            /* Exceptions pre-scrub at capture (before_send already ran), but
-             * super props / groups are stamped afterward - so still re-apply the
-             * denylist to those, just don't run the hook a second time. */
-            if (evs[i].flags & PH_EVF_SCRUBBED) {
-                if (g_ph.denylist_count > 0) scrub_one(&evs[i], 0);
-            } else if (!scrub_one(&evs[i], 1)) {
-                continue; /* dropped by before_send */
-            }
+        /* Exceptions pre-scrub at capture (before_send already ran), but the
+         * merged super props are stamped afterward - re-apply the denylist
+         * without invoking the hook twice. Every other event kind contains
+         * caller-controlled values and goes through the full privacy pass. */
+        if (evs[i].flags & PH_EVF_SCRUBBED) {
+            if (g_ph.denylist_count > 0) scrub_one(&evs[i], 0);
+        } else if (!scrub_one(&evs[i], 1)) {
+            continue; /* dropped by before_send */
         }
         if (out != i) evs[out] = evs[i];
         out++;

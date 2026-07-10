@@ -133,17 +133,20 @@ customer's own integration reference:
 
 ## 5. Privacy & reliability (parity across native + wasm)
 
-- **`before_send(event, props) -> keep|drop`** runs before serialization:
-  product events run on the sender thread, while exception events scrub before
-  enqueue so structured exception text can be redacted before `$exception_list`
-  is built. Mutate `props` to redact, or return 0 to drop the event. Implemented.
+- **`before_send(event, props) -> keep|drop`** runs before serialization for
+  capture and control events: native events run on the sender thread, while
+  exception events scrub before enqueue so structured exception text can be
+  redacted before `$exception_list` is built. Mutate `props` to redact, or
+  return 0 to drop the event. Implemented.
   A reference scrubber (strip tokens,
   IPs, emails, URL query strings) with shared test vectors follows, so native
   and wasm can't drift.
 - **`property_denylist`** strips named keys from every event in the same
   sender-side scrub pass - the blunt companion to the programmable hook. The
   scrub pass unpacks a ring slot back into a `ph_props`, applies the denylist +
-  hook, and repacks, leaving `$groups` untouched.
+  hook, and repacks, leaving `$groups` untouched. Explicit event properties are
+  merged before non-shadowed super properties, so the fixed public cap behaves
+  identically with or without privacy enabled.
 - **Rate limiter.** A token bucket on the capture path (`rate_limit_per_sec`)
   caps product/exception events so a runaway loop can't flood ingestion. It
   refills from the monotonic tick capture already reads, so the hot path stays

@@ -24,6 +24,29 @@ void ph_copy_prop_value(ph_props *dst, const ph_prop *src) {
     }
 }
 
+static int props_has_key(const ph_props *p, const char *key) {
+    int i;
+    if (!p || !key) return 0;
+    for (i = 0; i < p->count && i < PH_MAX_PROPS; i++)
+        if (strcmp(p->items[i].key, key) == 0) return 1;
+    return 0;
+}
+
+void ph_props_merge(ph_props *out, const ph_props *explicit_props,
+                    const ph_props *super_props) {
+    int i, n;
+    ph_props_init(out);
+    n = explicit_props && explicit_props->count > 0 ? explicit_props->count : 0;
+    if (n > PH_MAX_PROPS) n = PH_MAX_PROPS;
+    for (i = 0; i < n; i++) ph_copy_prop_value(out, &explicit_props->items[i]);
+    n = super_props && super_props->count > 0 ? super_props->count : 0;
+    if (n > PH_MAX_PROPS) n = PH_MAX_PROPS;
+    for (i = 0; i < n && out->count < PH_MAX_PROPS; i++) {
+        const ph_prop *it = &super_props->items[i];
+        if (!props_has_key(explicit_props, it->key)) ph_copy_prop_value(out, it);
+    }
+}
+
 void ph_props_remove_key(ph_props *p, const char *key) {
     int i, k;
     if (!p || !key) return;

@@ -144,11 +144,12 @@ ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
 
 /* --- before_send scrubber --------------------------------------
  *
- * Runs before serialization. Native product events run on the sender thread;
- * exception events run before enqueue so structured exception text can be
- * redacted before $exception_list is built. Mutate `props` in place to redact,
- * or return 0 to drop the event entirely. Return nonzero to keep it. `event`
- * is the event name. `user` is ph_config.user_data. NULL hook = pass-through.
+ * Runs before serialization for capture and control events. Native events run
+ * on the sender thread except exceptions, which scrub before enqueue so
+ * structured exception text can be redacted before $exception_list is built.
+ * Mutate `props` in place to redact, or return 0 to drop the event entirely.
+ * Return nonzero to keep it. `event` is the event name. `user` is
+ * ph_config.user_data. NULL hook = pass-through.
  * Callbacks must not call ph_flush() or ph_shutdown(); those calls are ignored.
  */
 typedef int (*ph_before_send_fn)(const char *event, ph_props *props, void *user);

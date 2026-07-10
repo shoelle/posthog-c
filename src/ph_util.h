@@ -21,6 +21,12 @@ void ph_copy_capped(char *dst, size_t cap, const char *src);
 /* Append one typed value from src to dst (dispatches on src->type). */
 void ph_copy_prop_value(ph_props *dst, const ph_prop *src);
 
+/* Build a fixed-cap merged set with explicit event properties first, then
+ * non-shadowed super properties. This makes explicit values win without a
+ * privacy-hook round trip changing which entries survive the public cap. */
+void ph_props_merge(ph_props *out, const ph_props *explicit_props,
+                    const ph_props *super_props);
+
 /* Remove every entry whose key equals `key` (in place). NULL p/key are no-ops. */
 void ph_props_remove_key(ph_props *p, const char *key);
 

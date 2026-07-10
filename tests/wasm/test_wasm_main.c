@@ -64,9 +64,13 @@ void wasm_run_test(void) {
 
     ph_props_init(&p);
     ph_props_set_str(&p, "plan", "pro");
+    ph_props_set_str(&p, "token", "identify-token");
     ph_identify("acct-9", &p);
 
-    ph_group("game", "asteroids", NULL);
+    ph_props_init(&p);
+    ph_props_set_int(&p, "players", 4);
+    ph_props_set_str(&p, "token", "group-token");
+    ph_group("game", "asteroids", &p);
 
     if (ph_is_feature_enabled("missing", 1)) ph_capture("missing_fallback_true", NULL);
     if (ph_get_feature_flag("off", flag, sizeof(flag)) == PH_OK &&
