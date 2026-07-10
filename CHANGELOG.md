@@ -6,11 +6,19 @@ project does not promise source or binary compatibility between releases.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.1.0] - 2026-07-10
+
+Initial public preview: C/C++ capture, native delivery and offline spill,
+posthog-js WASM bridge, feature flags, error tracking, and opt-in crash capture.
+
 ### Added
 
 - Stable host-owned anonymous identity contract and `ph_get_distinct_id()`.
 - Bounded `/flags/` response framing tests and HTTP parser fuzz coverage.
 - ReleaseSafe, sanitizer, fuzz, WASM, and downstream package CI coverage.
+- An opt-in real-service contract workflow for ingestion and feature flags.
 - Security policy and contribution guidance.
 
 ### Changed
@@ -19,6 +27,7 @@ project does not promise source or binary compatibility between releases.
 - Public property capacities are a fixed source/ABI contract.
 - Native event clocks include suspend and UUID/reset entropy comes from the OS.
 - Documentation now states the native/WASM semantic boundary explicitly.
+- Transport operations share a whole-request deadline.
 
 ### Fixed
 
@@ -28,8 +37,3 @@ project does not promise source or binary compatibility between releases.
 - Offline spill durability, permissions, replay accounting, and loss reporting.
 - Crash-record replacement, premature deletion, handler-state restoration, and
   overbroad async-signal-safety claims.
-
-## [0.1.0] - 2026-07-10
-
-Initial public preview: C/C++ capture, native delivery and offline spill,
-posthog-js WASM bridge, feature flags, error tracking, and opt-in crash capture.
