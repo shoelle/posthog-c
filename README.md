@@ -116,6 +116,12 @@ process that will emit events; do not call the inherited instance in the child.
 
 TODO: Linux/macOS TLS. See [TODO.md](TODO.md) for more.
 
+## Project policy
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release checks,
+[SECURITY.md](SECURITY.md) for private vulnerability reporting and supported
+versions, and [CHANGELOG.md](CHANGELOG.md) for user-visible changes.
+
 ## License
 
 [MIT](LICENSE).

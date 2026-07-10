@@ -16,25 +16,63 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
         with:
           version: 0.15.2
       - name: Build
         run: zig build
       - name: Test
         run: zig build test
+      - name: ReleaseSafe
+        run: zig build -Doptimize=ReleaseSafe test
+
+  sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
+        with:
+          version: 0.15.2
+      - name: ASan + UBSan
+        shell: bash
+        run: |
+          zig cc -std=c11 -D_GNU_SOURCE -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Iinclude -Isrc -Ithird_party/sdefl \
+            src/*.c tests/*.c -lpthread -ldl -o posthog_tests_san
+          ./posthog_tests_san
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
+        with:
+          version: 0.15.2
+      - name: Bounded parser fuzz
+        run: zig build -Doptimize=ReleaseSafe fuzz
+
+  package-consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
+        with:
+          version: 0.15.2
+      - name: Build as a downstream Zig dependency
+        working-directory: tests/consumer
+        run: zig build run
 
   # WASM backend: compile the window.posthog shim with emcc and run the Node
   # parity harness (mocked window.posthog).
   wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
         with:
           version: 0.15.2
-      - uses: mymindstorm/setup-emsdk@v14
+      - uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021 # v14
         with:
           version: 3.1.64
       - name: Build + test WASM

@@ -1,0 +1,10 @@
+.{
+    .name = .posthog_consumer_smoke,
+    .version = "0.0.0",
+    .fingerprint = 0x953a8a944f8b22e0,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .posthog_c = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "main.c" },
+}

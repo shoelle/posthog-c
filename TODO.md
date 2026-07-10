@@ -146,16 +146,16 @@ Where posthog-c is deliberately stronger than other telemetry SDKs:
 - [ ] Add ReleaseSafe and Linux ASan/UBSan CI jobs, a bounded fuzz CI job, and a
   package-consumer smoke project. Keep an opt-in live PostHog contract test for
   `/batch/`, `/flags/`, payloads, quota responses, and exposure events.
-- [ ] Make an explicitly requested `zig build test-wasm` fail when emcc or Node
+- [x] Make an explicitly requested `zig build test-wasm` fail when emcc or Node
   is missing instead of succeeding after a skip; keep ordinary native builds
   independent of emsdk.
-- [ ] Include `DESIGN.md` and `TODO.md` in `build.zig.zon` so packaged README
+- [x] Include `DESIGN.md` and `TODO.md` in `build.zig.zon` so packaged README
   links work, and reconcile the README's Zig 0.15.2 requirement with the
   manifest's 0.15.0 minimum.
-- [ ] Add `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`; document supported
+- [x] Add `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`; document supported
   platforms/toolchains, lifecycle and callback rules, offline-file sensitivity,
   the experimental crash handler, versioning, and the release checklist.
-- [ ] Pin GitHub Actions by commit SHA and document the dependency/update policy
+- [x] Pin GitHub Actions by commit SHA and document the dependency/update policy
   for Zig, emsdk, and vendored sdefl.
 - [ ] Revisit the public version before first release. `0.7.0` implies more
   maturity than a new, unofficial, Windows-first SDK; consider publishing as an

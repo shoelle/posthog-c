@@ -262,8 +262,8 @@ pub fn build(b: *std.Build) void {
 
     // -- WASM backend: `zig build test-wasm` -----------------------------
     // Compiles the shim + shared core with emcc, then runs the Node parity
-    // harness (a mocked window.posthog). Skips with a warning if emcc/node are
-    // absent, so a plain `zig build` on a machine without emsdk still works.
+    // harness (a mocked window.posthog). This explicit step fails when emcc or
+    // Node is absent; ordinary `zig build` remains independent of emsdk.
     const test_wasm_step = b.step("test-wasm", "Build the WASM backend with emcc and run the Node parity harness");
     if (findEmcc(b)) |emcc_path| {
         const compile = b.addSystemCommand(&.{emcc_path});
@@ -283,10 +283,11 @@ pub fn build(b: *std.Build) void {
             run.step.dependOn(&compile.step);
             test_wasm_step.dependOn(&run.step);
         } else {
-            std.log.warn("node not found; WASM compiled but the behavioral harness was skipped", .{});
-            test_wasm_step.dependOn(&compile.step);
+            const fail = b.addFail("test-wasm requires Node (install Node or emsdk's bundled runtime)");
+            test_wasm_step.dependOn(&fail.step);
         }
     } else {
-        std.log.warn("emcc not found (install emsdk or set EMSDK); skipping WASM", .{});
+        const fail = b.addFail("test-wasm requires emcc (install emsdk or set EMSDK)");
+        test_wasm_step.dependOn(&fail.step);
     }
 }

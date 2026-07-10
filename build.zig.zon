@@ -2,7 +2,7 @@
     .name = .posthog_c,
     .version = "0.7.0",
     .fingerprint = 0x3c55970878db34a5,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.15.2",
     .dependencies = .{},
     .paths = .{
         "build.zig",
@@ -13,6 +13,11 @@
         "tests",
         "examples",
         "README.md",
+        "DESIGN.md",
+        "TODO.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "CHANGELOG.md",
         "LICENSE",
     },
 }
