@@ -157,6 +157,6 @@ Where posthog-c is deliberately stronger than other telemetry SDKs:
   the experimental crash handler, versioning, and the release checklist.
 - [x] Pin GitHub Actions by commit SHA and document the dependency/update policy
   for Zig, emsdk, and vendored sdefl.
-- [ ] Revisit the public version before first release. `0.7.0` implies more
+- [x] Revisit the public version before first release. `0.7.0` implies more
   maturity than a new, unofficial, Windows-first SDK; consider publishing as an
   explicitly experimental `0.1.0` until the ship blockers above are closed.

@@ -29,7 +29,7 @@ project does not promise source or binary compatibility between releases.
 - Crash-record replacement, premature deletion, handler-state restoration, and
   overbroad async-signal-safety claims.
 
-## [0.7.0] - 2026-07-10
+## [0.1.0] - 2026-07-10
 
 Initial public preview: C/C++ capture, native delivery and offline spill,
 posthog-js WASM bridge, feature flags, error tracking, and opt-in crash capture.

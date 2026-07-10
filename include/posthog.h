@@ -35,11 +35,11 @@ extern "C" {
 /* --- Version ---------------------------------------------------------- */
 
 #define PH_VERSION_MAJOR 0
-#define PH_VERSION_MINOR 7
+#define PH_VERSION_MINOR 1
 #define PH_VERSION_PATCH 0
-#define PH_VERSION_STRING "0.7.0"
+#define PH_VERSION_STRING "0.1.0"
 
-/* Returns the compiled-in library version, e.g. "0.7.0". */
+/* Returns the compiled-in library version, e.g. "0.1.0". */
 const char *ph_version(void);
 
 /* --- Fixed public capacities -----------------------------------------
@@ -203,7 +203,7 @@ typedef struct ph_config {
     int person_profiles; /* ph_person_profiles (default PH_IDENTIFIED_ONLY) */
 
     int send_feature_flag_events; /* emit $feature_flag_called on flag reads (default 1) */
-    int preload_flags;            /* fetch flags during ph_init (default 1; v0.7) */
+    int preload_flags;            /* fetch flags during ph_init (default 1) */
 
     ph_before_send_fn before_send; /* scrubber; NULL = pass-through */
     ph_log_fn on_log;              /* diagnostics sink; NULL = silent */
