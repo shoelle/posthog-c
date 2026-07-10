@@ -10,7 +10,7 @@ See [`DESIGN.md`](DESIGN.md) for architecture + roadmap and
 ## Canonical docs
 
 When these conflict, prefer in order:
-1. [`DESIGN.md`](DESIGN.md) - architecture + event/wire model + roadmap
+1. [`DESIGN.md`](DESIGN.md) - architecture + key design decisions
 2. this file - conventions + module map + invariants
 3. inline comments near the code
 4. [`README.md`](README.md)
@@ -50,7 +50,7 @@ src/ph_internal.h        SDK context, transport seam, cross-file helpers
 Data flow: `ph_capture` packs a self-contained event into the ring; the sender
 drains it, serializes a batch, and POSTs. The wasm backend calls straight into
 `window.posthog`, reusing the shared serializer. Full flow and the reasoning
-behind each piece are in DESIGN.md ("Native delivery pipeline").
+behind each piece are in DESIGN.md ("Native pipeline").
 
 ## Coding conventions
 
