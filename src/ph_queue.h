@@ -54,6 +54,8 @@ typedef struct ph_event {
     uint16_t did_len;  /* distinct_id override length (0 => use ctx id) */
     uint16_t blob_len; /* packed-props length */
     uint64_t mono_ns;  /* monotonic tick captured on the caller thread */
+    uint64_t epoch_wall_ns; /* wall/mono mapping snapshotted at enqueue */
+    uint64_t epoch_mono_ns;
     uint64_t seq;      /* per-event sequence; feeds uuid + preserves order */
     char data[PH_EVENT_DATA_CAP];
 } ph_event;

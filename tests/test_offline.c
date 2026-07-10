@@ -11,6 +11,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define RMDIR(p) _rmdir(p)
+#else
+#include <unistd.h>
+#define RMDIR(p) rmdir(p)
+#endif
+
 static void temp_dir(char *out, size_t cap) {
     const char *t = getenv("TEMP");
     if (!t) t = getenv("TMPDIR");
@@ -204,8 +212,13 @@ void suite_offline(void) {
 
     /* --- persistence failure is reported as event loss, never as a spill --- */
     {
-        char blocker[300];
+        char blocker[300], blocker_spill[340];
         snprintf(blocker, sizeof(blocker), "%s/offline_path_is_a_file", dir);
+        snprintf(blocker_spill, sizeof(blocker_spill), "%s/%s", blocker,
+                 PH_OFFLINE_FILENAME);
+        remove(blocker_spill);
+        RMDIR(blocker);
+        remove(blocker);
         write_file(blocker, "not a directory");
         cfg.offline_path = blocker;
         CHECK(ph_init(&cfg) == PH_OK);
@@ -214,9 +227,15 @@ void suite_offline(void) {
         mock_set_status(500);
         ph_capture("spill_must_fail", NULL);
         ph_flush(2000);
-        CHECK(atomic_load(&g_ph.st_failed) == 1);
-        CHECK(ph_dropped_events() == 1);
+        CHECK_MSG(atomic_load(&g_ph.st_failed) == 1,
+                  "expected st_failed=1, got %llu",
+                  (unsigned long long)atomic_load(&g_ph.st_failed));
+        CHECK_MSG(ph_dropped_events() == 1,
+                  "expected dropped=1, got %llu",
+                  (unsigned long long)ph_dropped_events());
         ph_shutdown();
         remove(blocker);
+        remove(blocker_spill);
+        RMDIR(blocker);
     }
 }

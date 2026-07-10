@@ -3,6 +3,7 @@
  * capture-path rate limiter. All observed through the mock transport.
  */
 #include "posthog.h"
+#include "ph_internal.h"
 #include "mock_transport.h"
 #include "test_util.h"
 
@@ -60,6 +61,24 @@ static int redact(const char *event, ph_props *props, void *user) {
     }
     ph_props_set_bool(props, "scrubbed", 1);
     return 1;
+}
+
+typedef struct scrub_state {
+    int calls;
+    int sender_calls;
+    int caller_calls;
+} scrub_state;
+
+static int counted_redact(const char *event, ph_props *props, void *user) {
+    scrub_state *s = (scrub_state *)user;
+    if (s) {
+        s->calls++;
+        if (g_ph.sender_running && ph_thread_is_current(&g_ph.sender))
+            s->sender_calls++;
+        else
+            s->caller_calls++;
+    }
+    return redact(event, props, NULL);
 }
 
 void suite_scrub(void) {
@@ -156,11 +175,13 @@ void suite_scrub(void) {
     {
         ph_config cfg;
         ph_props identify, group;
+        scrub_state scrub = {0, 0, 0};
         static const char *deny[] = {"secret", "token"};
         base_cfg(&cfg);
         cfg.property_denylist = deny;
         cfg.property_denylist_count = 2;
-        cfg.before_send = redact; /* also strips "password" and adds "scrubbed" */
+        cfg.before_send = counted_redact; /* strips "password" and adds "scrubbed" */
+        cfg.user_data = &scrub;
         start(&cfg);
 
         ph_props_init(&identify);
@@ -176,6 +197,9 @@ void suite_scrub(void) {
 
         mock_set_flags_response("{\"flags\":{}}");
         ph_reload_feature_flags();
+        CHECK(scrub.calls == 2);
+        CHECK(scrub.sender_calls == 2);
+        CHECK(scrub.caller_calls == 0);
         CHECK_NOT_CONTAINS(mock_last_fetch_body(), "identify-pii");
         CHECK_NOT_CONTAINS(mock_last_fetch_body(), "hunter2");
         CHECK_NOT_CONTAINS(mock_last_fetch_body(), "group-pii");

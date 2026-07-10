@@ -300,6 +300,47 @@ void suite_crash(void) {
     ph_shutdown();
     remove(recpath);
 
+    /* --- a permanent HTTP reject is not a durable handoff. Keep the crash
+     *     record so a later run with fixed credentials/config can replay it. --- */
+    temp_dir(dir, sizeof dir);
+    MKDIR(dir);
+    snprintf(recpath, sizeof recpath, "%s/%s", dir, PH_CRASH_FILENAME);
+    remove(recpath);
+    memset(&a, 0, sizeof a);
+    a.sig = SIGSEGV;
+    a.module_count = 1;
+    strcpy(a.modules[0], "crash_demo.exe");
+    a.frame_count = 1;
+    a.frame_module[0] = 0;
+    a.frame_off[0] = 0x1361;
+    n = ph_crash_encode(&a, rec, sizeof rec);
+    write_bytes(recpath, rec, n);
+
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_crash";
+    cfg.api_host = "http://127.0.0.1:9/ingest";
+    cfg.distinct_id = "anon-c";
+    cfg.flush_at = 100000;
+    cfg.flush_interval_ms = 60000;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    cfg.offline_path = dir;
+    cfg.crash_handler = 0;
+    CHECK(ph_init(&cfg) == PH_OK);
+    mock_reset();
+    mock_install();
+    mock_set_status(400);
+
+    CHECK(ph_signal_crash_replay(dir) == 1);
+    ph_flush(2000);
+    content = read_file(recpath, &clen);
+    CHECK_MSG(content != NULL && clen == n,
+              "crash record must remain after a non-durable 4xx reject");
+    if (content) free(content);
+
+    ph_shutdown();
+    remove(recpath);
+
     /* --- a before_send that drops $exception must not replay forever: the
      *     record is cleared on a terminal capture veto, not retained --- */
     temp_dir(dir, sizeof dir);

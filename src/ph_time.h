@@ -3,9 +3,9 @@
  *
  * Split deliberately from the capture path: ph_capture() reads only the cheap
  * monotonic counter (ph_now_mono_ns). Everything expensive or non-deterministic
- * - wall-clock formatting, UUID generation - runs on the sender thread, which
- * reconstructs each event's real time from its monotonic tick against a single
- * epoch captured at init.
+ * - wall-clock correction, formatting, UUID generation - runs on the sender
+ * thread. Each event snapshots the current wall/mono epoch at enqueue so later
+ * clock corrections affect future events without shifting old queued records.
  */
 #ifndef PH_TIME_H
 #define PH_TIME_H

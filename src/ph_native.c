@@ -117,7 +117,7 @@ static FILE *open_private_file(const char *path, int append) {
 #endif
 }
 
-static int durable_close(FILE *f) {
+static int durable_flush(FILE *f) {
     int ok = fflush(f) == 0;
     if (ok) {
 #if defined(_WIN32)
@@ -126,6 +126,11 @@ static int durable_close(FILE *f) {
         ok = fsync(fileno(f)) == 0;
 #endif
     }
+    return ok;
+}
+
+static int durable_close(FILE *f) {
+    int ok = durable_flush(f);
     if (fclose(f) != 0) ok = 0;
     return ok;
 }
@@ -152,13 +157,23 @@ static int atomic_replace(const char *tmp, const char *path) {
 /* Make a create/rename in the offline directory durable. On POSIX a file's own
  * fsync does not persist its parent directory entry, so fsync the directory too;
  * on Windows MOVEFILE_WRITE_THROUGH already commits the rename. */
-static void fsync_offline_dir(void) {
+static int fsync_offline_dir(void) {
 #if !defined(_WIN32)
     int fd = open(g_ph.offline_path, O_RDONLY);
-    if (fd >= 0) {
-        (void)fsync(fd);
-        (void)close(fd);
+    int ok;
+    if (fd < 0) {
+        ph_log(PH_LOG_WARN, "offline: cannot open directory %s for fsync",
+               g_ph.offline_path);
+        return 0;
     }
+    ok = fsync(fd) == 0;
+    if (close(fd) != 0) ok = 0;
+    if (!ok)
+        ph_log(PH_LOG_WARN, "offline: directory fsync failed for %s",
+               g_ph.offline_path);
+    return ok;
+#else
+    return 1;
 #endif
 }
 
@@ -172,7 +187,7 @@ static int write_atomic(const char *path, const char *data, size_t len) {
     ok = len == 0 || fwrite(data, 1, len, f) == len;
     if (!durable_close(f)) ok = 0;
     if (ok) ok = atomic_replace(tmp, path);
-    if (ok) fsync_offline_dir();
+    if (ok) ok = fsync_offline_dir();
     if (!ok) remove(tmp);
     return ok;
 }
@@ -277,18 +292,19 @@ static int offline_spill(const char *body, size_t len) {
         return 0;
     }
     ok = fwrite(body, 1, len, f) == len && fputc('\n', f) != EOF;
-    if (!ok) {
+    if (!ok || !durable_flush(f)) {
         /* A short write (disk full/quota) must not leave a partial, unterminated
          * record: the next append would concatenate behind it, the newline that
          * append later writes would hide the tear from offline_replay's torn-tail
          * guard, and the merged line would then fail to parse and be lost
          * uncounted. Roll back to the last clean record boundary instead. */
-        ph_log(PH_LOG_WARN, "offline: short write spilling to %s", path);
-        fflush(f);
+        ph_log(PH_LOG_WARN, "offline: incomplete durable spill to %s", path);
         (void)truncate_file(f, start < 0 ? 0 : start);
+        (void)durable_flush(f);
+        ok = 0;
     }
-    if (!durable_close(f)) ok = 0;
-    if (ok && start < 0) fsync_offline_dir(); /* new file: persist the dir entry */
+    if (fclose(f) != 0) ok = 0;
+    if (ok && start < 0) ok = fsync_offline_dir(); /* persist new dir entry */
     return ok;
 }
 
@@ -397,6 +413,69 @@ static void offline_replay(void) {
 
 /* remove-key lives in ph_util.c (ph_props_remove_key), shared across backends. */
 
+static int cstr_eq_slice(const char *s, const char *buf, size_t len) {
+    return strlen(s) == len && memcmp(s, buf, len) == 0;
+}
+
+static int prop_str_copy(const ph_props *p, const char *key, char *out,
+                         size_t cap) {
+    int i;
+    if (cap == 0) return 0;
+    out[0] = '\0';
+    for (i = 0; i < p->count; i++) {
+        if (p->items[i].type == PH_T_STR &&
+            strcmp(p->items[i].key, key) == 0) {
+            ph_copy_capped(out, cap, p->items[i].val.str);
+            return out[0] != '\0';
+        }
+    }
+    return 0;
+}
+
+static void request_sender_flags_refetch(void) {
+    ph_mutex_lock(&g_ph.flush_lock);
+    g_ph.flags_refetch = 1;
+    g_ph.flags_fetch_request_gen++;
+    ph_mutex_unlock(&g_ph.flush_lock);
+}
+
+static void sync_flag_context_from_control(const ph_event *e,
+                                           const ph_props *props,
+                                           const char *group_type,
+                                           const char *group_key) {
+    int changed = 0;
+
+    if (e->kind == PH_EV_IDENTIFY) {
+        const char *did = e->data + e->name_len;
+        ph_mutex_lock(&g_ph.lock);
+        if (cstr_eq_slice(g_ph.distinct_id, did, e->did_len)) {
+            g_ph.flag_person_props = *props;
+            ph__flags_context_changed_locked();
+            changed = 1;
+        }
+        ph_mutex_unlock(&g_ph.lock);
+    } else if (e->kind == PH_EV_GROUP && group_type && group_type[0] &&
+               group_key && group_key[0]) {
+        ph_props group_props = *props;
+        int i;
+        ph_props_remove_key(&group_props, "$group_type");
+        ph_props_remove_key(&group_props, "$group_key");
+        ph_mutex_lock(&g_ph.lock);
+        for (i = 0; i < g_ph.group_count; i++) {
+            if (strcmp(g_ph.group_types[i], group_type) == 0 &&
+                strcmp(g_ph.group_keys[i], group_key) == 0) {
+                g_ph.group_props[i] = group_props;
+                ph__flags_context_changed_locked();
+                changed = 1;
+                break;
+            }
+        }
+        ph_mutex_unlock(&g_ph.lock);
+    }
+
+    if (changed) request_sender_flags_refetch();
+}
+
 /* Scrub one event: strip denylisted keys, and (when run_before_send is set) run
  * before_send. Returns 1 to keep (blob rewritten in place) or 0 to drop.
  * Non-scalar entries ($groups, $exception_list) are preserved untouched. */
@@ -414,15 +493,23 @@ static int scrub_one(ph_event *e, int run_before_send) {
     unsigned char type;
     const char *key, *val;
     size_t klen, vlen;
+    char group_type[PH_KEY_CAP];
+    char group_key[PH_KEY_CAP];
 
     nl = e->name_len < sizeof(name) - 1 ? e->name_len : sizeof(name) - 1;
     memcpy(name, e->data, nl);
     name[nl] = '\0';
+    group_type[0] = '\0';
+    group_key[0] = '\0';
 
     /* Scalars -> props (scrubbable). Non-scalar entries ($groups, the
      * $exception_list rawjson) are copied through verbatim: before_send only
      * shapes user properties, and those payloads must survive the round trip. */
     ph_unpack_props(blob, len, &props);
+    if (e->kind == PH_EV_GROUP) {
+        prop_str_copy(&props, "$group_type", group_type, sizeof(group_type));
+        prop_str_copy(&props, "$group_key", group_key, sizeof(group_key));
+    }
     while (ph_blob_next(&cur, cend, &type, &key, &klen, &val, &vlen)) {
         if (type <= PH_T_BOOL) continue; /* scalar: already captured in props */
         {
@@ -446,6 +533,8 @@ static int scrub_one(ph_event *e, int run_before_send) {
             return 0;
         }
     }
+    if (e->kind == PH_EV_IDENTIFY || e->kind == PH_EV_GROUP)
+        sync_flag_context_from_control(e, &props, group_type, group_key);
 
     nb = ph_pack_props(&props, tmp, sizeof(tmp));
     if (plen && nb + plen <= sizeof(tmp)) {
@@ -500,23 +589,18 @@ static int sender_backoff_wait(int ms) {
 
 static void persist_run(ph_event *evs, int n);
 
-/* Capture records only a suspend-aware monotonic tick; wall time is
- * reconstructed here at drain from the init-time (wall, mono) anchor. A clock
- * that is wrong at startup (a dead RTC on an embedded box) is typically fixed by
- * NTP within seconds of launch, so re-anchor only during a short grace window
- * after init. After that the anchor is frozen: a mid-session NTP or manual clock
- * step must never retroactively shift the timestamps of events captured -
- * possibly hours earlier, while offline - under the correct mapping, which is
- * exactly the "a queued event reports when it happened" guarantee. Sender thread
- * only. */
+/* Capture snapshots the current wall/mono epoch without reading the wall clock.
+ * The sender keeps that global epoch corrected for future captures; already
+ * queued events serialize from their own snapshot, so later NTP/manual clock
+ * steps do not rewrite old timestamps. */
 static void refresh_clock_epoch(void) {
-    const uint64_t threshold_ns = 1000000000ull;     /* ignore <1s slew */
-    const uint64_t grace_ns = 60ull * 1000000000ull; /* re-anchor window */
+    const uint64_t threshold_ns = 1000000000ull; /* ignore <1s slew */
     uint64_t mono = ph_now_mono_ns();
     uint64_t wall = ph_now_wall_ns();
-    if (mono < g_ph.epoch_mono_ns || mono - g_ph.epoch_mono_ns > grace_ns) return;
+    ph_mutex_lock(&g_ph.lock);
     g_ph.epoch_wall_ns = ph_correct_wall_epoch(
         g_ph.epoch_wall_ns, g_ph.epoch_mono_ns, wall, mono, threshold_ns);
+    ph_mutex_unlock(&g_ph.lock);
 }
 
 static void spill_batch(ph_event *evs, int n) {
@@ -586,8 +670,6 @@ static int send_one(const char *body, size_t len, int n, int has_crash_replay) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
                             "(client error, will not retry)", status, n);
-        if (has_crash_replay) /* terminal: clear the record, don't replay forever */
-            ph_signal_crash_handoff_complete(g_ph.offline_path);
     } else if (g_ph.offline_path[0]) {
         if (offline_spill(body, len)) {
             ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
@@ -633,7 +715,6 @@ static void persist_run(ph_event *evs, int n) {
         ph_strbuf_free(&body);
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d held events", n);
-        if (has_crash_replay) ph_signal_crash_handoff_complete(g_ph.offline_path);
         return;
     }
     if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes) {
@@ -648,7 +729,6 @@ static void persist_run(ph_event *evs, int n) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)1);
         ph_log(PH_LOG_WARN,
                "single event exceeds max_batch_bytes; event dropped instead of spilled");
-        if (has_crash_replay) ph_signal_crash_handoff_complete(g_ph.offline_path);
         return;
     }
     if (!offline_spill(body.data ? body.data : "", body.len)) {
@@ -791,18 +871,27 @@ static void sender_main(void *arg) {
 
     for (;;) {
         int stop, refetch;
+        uint64_t refetch_gen;
         /* Wake at least as often as the stats interval so on_stats fires on time
          * even while the queue is idle (otherwise we only wake every flush). */
         int wait_ms = g_ph.flush_interval_ms;
         if (g_ph.stats_interval_ms > 0 && g_ph.stats_interval_ms < wait_ms)
             wait_ms = g_ph.stats_interval_ms;
         ph_queue_wait(&g_ph.queue, g_ph.flush_at, wait_ms);
+        drain(scratch, 0);
         ph_mutex_lock(&g_ph.flush_lock);
         refetch = g_ph.flags_refetch;
+        refetch_gen = g_ph.flags_fetch_request_gen;
         g_ph.flags_refetch = 0;
         ph_mutex_unlock(&g_ph.flush_lock);
-        if (refetch) ph__flags_fetch(); /* re-evaluate flags after ph_identify */
-        drain(scratch, 0);
+        if (refetch) {
+            ph__flags_fetch(); /* re-evaluate after scrubbed identity/group context */
+            ph_mutex_lock(&g_ph.flush_lock);
+            if (g_ph.flags_fetch_gen < refetch_gen)
+                g_ph.flags_fetch_gen = refetch_gen;
+            ph_cond_broadcast(&g_ph.idle_cond);
+            ph_mutex_unlock(&g_ph.flush_lock);
+        }
         if (g_ph.on_stats && g_ph.stats_interval_ms > 0) {
             uint64_t now = ph_now_mono_ns();
             if (now - last_stats >= (uint64_t)g_ph.stats_interval_ms * 1000000ull) {

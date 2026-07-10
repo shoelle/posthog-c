@@ -86,7 +86,7 @@ static void gen_anon_id(char *out) {
 /* Caller holds g_ph.lock. A flag value is meaningful only for the exact
  * identity + group context that produced it. Clear synchronously so a caller
  * can never observe the previous user's value while an async refresh runs. */
-static void flags_context_changed_locked(void) {
+void ph__flags_context_changed_locked(void) {
     g_ph.flag_count = 0;
     g_ph.flags_context_gen++;
     if (g_ph.flags_context_gen == 0) g_ph.flags_context_gen = 1;
@@ -95,6 +95,7 @@ static void flags_context_changed_locked(void) {
 static void request_flags_refetch(void) {
     ph_mutex_lock(&g_ph.flush_lock);
     g_ph.flags_refetch = 1;
+    g_ph.flags_fetch_request_gen++;
     ph_mutex_unlock(&g_ph.flush_lock);
     ph__sender_wake();
 }
@@ -355,6 +356,8 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
         e->flags = (uint8_t)(base_flags | PH_EVF_HAS_DID |
                              (no_profile ? PH_EVF_NO_PROFILE : 0));
         e->mono_ns = mono;
+        e->epoch_wall_ns = g_ph.epoch_wall_ns;
+        e->epoch_mono_ns = g_ph.epoch_mono_ns;
         e->seq = seq;
         e->name_len = (uint16_t)name_len;
         e->did_len = (uint16_t)did_len;
@@ -405,37 +408,23 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     return r == PH_OK && truncated ? PH_ERR_TRUNCATED : r;
 }
 
-/* Scrub caller-supplied person/group properties (identify $set, group
- * $group_set) the same way their control event is scrubbed, so a denylisted or
- * before_send-redacted value never reaches the /flags/ request body. The event
- * copy is scrubbed independently on the sender thread, so the hook may run once
- * here and once there - it must be side-effect-free per the documented contract.
- * Runs with g_ph.lock released: before_send may re-enter public APIs. Returns 0
- * if the hook vetoed the set (store nothing) or 1 to store the scrubbed props. */
-static int scrub_context_props(ph_props *p, const char *event) {
-    int keep = 1;
-    ph_apply_denylist(p, g_ph.denylist, g_ph.denylist_count);
-    if (g_ph.before_send) {
-        ph__in_callback++;
-        keep = g_ph.before_send(event, p, g_ph.user_data);
-        ph__in_callback--;
-    }
-    return keep;
+static void immediate_flag_props(ph_props *out, const ph_props *in) {
+    ph_props_init(out);
+    if (!in) return;
+    if (g_ph.before_send) return; /* sender applies the hook once, then syncs */
+    *out = *in;
+    ph_apply_denylist(out, g_ph.denylist, g_ph.denylist_count);
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
     ph_props person;
     if (!g_ph.enabled || !distinct_id || !distinct_id[0]) return;
-    ph_props_init(&person);
-    if (set_props) {
-        person = *set_props;
-        if (!scrub_context_props(&person, "$identify")) ph_props_init(&person);
-    }
+    immediate_flag_props(&person, set_props);
     ph_mutex_lock(&g_ph.lock);
     ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, distinct_id);
     g_ph.identified = 1;
     g_ph.flag_person_props = person;
-    flags_context_changed_locked();
+    ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
     /* $identify builds a profile regardless of policy (profile_mode = 0). */
     ph__submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
@@ -477,7 +466,7 @@ void ph_reset(void) {
     ph_props_init(&g_ph.super);
     ph_props_init(&g_ph.flag_person_props);
     g_ph.group_count = 0;
-    flags_context_changed_locked();
+    ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
     request_flags_refetch();
 }
@@ -493,12 +482,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_copy_capped(type_capped, sizeof(type_capped), type);
     ph_copy_capped(key_capped, sizeof(key_capped), key);
 
-    /* Scrub $group_set before it is stored for the /flags/ group_properties. */
-    ph_props_init(&gprops);
-    if (set_props) {
-        gprops = *set_props;
-        if (!scrub_context_props(&gprops, "$groupidentify")) ph_props_init(&gprops);
-    }
+    immediate_flag_props(&gprops, set_props);
 
     /* Remember the membership so later events carry $groups. */
     ph_mutex_lock(&g_ph.lock);
@@ -521,7 +505,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
         g_ph.group_count++;
         context_changed = 1;
     }
-    if (context_changed) flags_context_changed_locked();
+    if (context_changed) ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
     if (context_changed) request_flags_refetch();
 

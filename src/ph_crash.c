@@ -109,6 +109,14 @@ static void crash_path(const char *dir, char *out, size_t cap) {
     snprintf(out, cap, "%s/%s", dir, PH_CRASH_FILENAME);
 }
 
+static void discard_crash_record(const char *dir, const char *reason) {
+    char path[PH_PATH_CAP + 32];
+    if (!dir || !dir[0]) return;
+    crash_path(dir, path, sizeof path);
+    if (remove(path) == 0)
+        ph_log(PH_LOG_WARN, "signal_crash: discarded replay record (%s)", reason);
+}
+
 static void put_u16(unsigned char *p, uint16_t v) {
     p[0] = (unsigned char)v;
     p[1] = (unsigned char)(v >> 8);
@@ -310,7 +318,7 @@ int ph_signal_crash_replay(const char *dir) {
     fclose(f);
 
     if (!ph_crash_decode(buf, rd, &ci)) {
-        remove(path); /* corrupt / foreign / torn - don't let it linger */
+        discard_crash_record(dir, "corrupt record");
         return 0;
     }
 
@@ -351,7 +359,7 @@ int ph_signal_crash_replay(const char *dir) {
          * $exception, or a record that decoded to an invalid exception. That is
          * deterministic: retaining the record would re-offer and re-refuse it on
          * every launch forever. Discard it as terminally handled. */
-        ph_signal_crash_handoff_complete(dir);
+        discard_crash_record(dir, "capture veto");
         return 0;
     }
 

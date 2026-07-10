@@ -191,8 +191,8 @@ typedef struct ph_ctx {
     int flag_count;
     uint64_t flags_context_gen; /* bumped when identity/groups change */
 
-    /* Timing epoch: one clock reading at init; the sender reconstructs each
-     * event's wall-clock time from its monotonic tick against this. */
+    /* Timing epoch: initialized once, then sender-corrected. Each event
+     * snapshots these fields at enqueue so old queued timestamps don't shift. */
     uint64_t epoch_wall_ns;
     uint64_t epoch_mono_ns;
     uint64_t uuid_salt;
@@ -214,6 +214,8 @@ typedef struct ph_ctx {
     int sending;         /* a batch is currently in flight */
     int sender_running;
     int flags_refetch;   /* sender should re-fetch feature flags (set on identify) */
+    uint64_t flags_fetch_request_gen; /* requested sender-side flag fetches */
+    uint64_t flags_fetch_gen; /* completed sender-side flag fetches */
     uint64_t drain_gen;  /* bumped after each full drain; lets ph_flush wait for
                           * a cycle to complete (e.g. an offline replay) even when
                           * the in-memory queue is already empty */
@@ -276,6 +278,10 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                       const char *did_override, const ph_props *props,
                       int profile_mode, int stamp_super_groups,
                       const char *extra, size_t extra_len);
+
+/* Caller holds g_ph.lock. Clears the flag cache and advances the context
+ * generation whenever identity, groups, or flag-evaluation props change. */
+void ph__flags_context_changed_locked(void);
 
 /* Exception builder with additional internal event flags. Crash replay uses
  * PH_EVF_CRASH_REPLAY so the sender can acknowledge durable handoff. */

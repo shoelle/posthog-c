@@ -28,6 +28,8 @@ static void build_event(ph_event *e, int kind, unsigned char flags,
     e->kind = (uint8_t)kind;
     e->flags = (uint8_t)(flags | PH_EVF_HAS_DID);
     e->mono_ns = 1000;
+    e->epoch_wall_ns = 1751803200000000000ull;
+    e->epoch_mono_ns = 1000;
     e->seq = 7;
     e->name_len = (uint16_t)strlen(name);
     e->did_len = (uint16_t)strlen(did);
@@ -49,6 +51,23 @@ void suite_serialize(void) {
     CHECK(ph_correct_wall_epoch(1000, 100, 2000, 200, 50) == 1900);
     CHECK(ph_correct_wall_epoch(1000, 100, 500, 200, 50) == 400);
     CHECK(ph_correct_wall_epoch(1000, 100, 9999, 99, 0) == 1000);
+
+    /* --- each event carries its own clock epoch snapshot --- */
+    {
+        ph_event evs[2];
+        char old_iso[40], new_iso[40];
+        ph_props_init(&p);
+        build_event(&evs[0], PH_EV_CAPTURE, 0, "old_epoch", "u", &p);
+        build_event(&evs[1], PH_EV_CAPTURE, 0, "new_epoch", "u", &p);
+        evs[1].epoch_wall_ns = c.epoch_wall_ns + 10000000000ull;
+        ph_format_iso8601(evs[0].epoch_wall_ns, old_iso, sizeof(old_iso));
+        ph_format_iso8601(evs[1].epoch_wall_ns, new_iso, sizeof(new_iso));
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, evs, 2, &out);
+        CHECK_CONTAINS(out.data, old_iso);
+        CHECK_CONTAINS(out.data, new_iso);
+        ph_strbuf_free(&out);
+    }
 
     /* --- basic capture, mixed prop types, anonymous --- */
     ph_props_init(&p);

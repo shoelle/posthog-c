@@ -206,11 +206,11 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
         eff_did_len = strlen(ctx->distinct_id);
     }
 
-    /* Reconstruct wall-clock time from the monotonic tick against the init
-     * epoch, so a long-queued (or offline-replayed) event reports when it was
-     * actually captured, not when it was sent. */
-    delta = (e->mono_ns >= ctx->epoch_mono_ns) ? (e->mono_ns - ctx->epoch_mono_ns) : 0;
-    wall = ctx->epoch_wall_ns + delta;
+    /* Reconstruct wall-clock time from the monotonic tick against the epoch
+     * snapshot captured with the event. Sender-side clock corrections update
+     * the global epoch only for later events, not already queued records. */
+    delta = (e->mono_ns >= e->epoch_mono_ns) ? (e->mono_ns - e->epoch_mono_ns) : 0;
+    wall = e->epoch_wall_ns + delta;
     ph_format_iso8601(wall, iso, sizeof(iso));
     ph_uuid_v7(wall / 1000000ull, ctx->uuid_salt, e->seq, uuid);
 

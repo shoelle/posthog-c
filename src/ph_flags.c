@@ -336,6 +336,22 @@ ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
 }
 
 void ph_reload_feature_flags(void) {
+    uint64_t target;
     if (!g_ph.enabled) return;
-    ph__flags_fetch();
+    if (!g_ph.sender_running || ph__in_callback ||
+        ph_thread_is_current(&g_ph.sender)) {
+        ph__flags_fetch();
+        return;
+    }
+
+    ph_mutex_lock(&g_ph.flush_lock);
+    g_ph.flags_refetch = 1;
+    target = ++g_ph.flags_fetch_request_gen;
+    ph_mutex_unlock(&g_ph.flush_lock);
+    ph__sender_wake();
+
+    ph_mutex_lock(&g_ph.flush_lock);
+    while (g_ph.sender_running && g_ph.flags_fetch_gen < target)
+        ph_cond_timedwait(&g_ph.idle_cond, &g_ph.flush_lock, 100);
+    ph_mutex_unlock(&g_ph.flush_lock);
 }
