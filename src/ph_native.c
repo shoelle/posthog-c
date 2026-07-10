@@ -545,6 +545,8 @@ static int send_one(const char *body, size_t len, int n, int has_crash_replay) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
                             "(client error, will not retry)", status, n);
+        if (has_crash_replay) /* terminal: clear the record, don't replay forever */
+            ph_signal_crash_handoff_complete(g_ph.offline_path);
     } else if (g_ph.offline_path[0]) {
         if (offline_spill(body, len)) {
             ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
@@ -590,6 +592,7 @@ static void persist_run(ph_event *evs, int n) {
         ph_strbuf_free(&body);
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_ERROR, "serialize OOM; dropped %d held events", n);
+        if (has_crash_replay) ph_signal_crash_handoff_complete(g_ph.offline_path);
         return;
     }
     if (g_ph.max_batch_bytes > 0 && body.len > (size_t)g_ph.max_batch_bytes) {
@@ -604,6 +607,7 @@ static void persist_run(ph_event *evs, int n) {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)1);
         ph_log(PH_LOG_WARN,
                "single event exceeds max_batch_bytes; event dropped instead of spilled");
+        if (has_crash_replay) ph_signal_crash_handoff_complete(g_ph.offline_path);
         return;
     }
     if (!offline_spill(body.data ? body.data : "", body.len)) {

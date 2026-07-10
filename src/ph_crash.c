@@ -346,8 +346,14 @@ int ph_signal_crash_replay(const char *dir) {
     ex.frames = frames;
     ex.frame_count = nf;
     ex.extra = &extra;
-    if (ph__capture_exception_flags(&ex, PH_EVF_CRASH_REPLAY) != PH_OK)
+    if (ph__capture_exception_flags(&ex, PH_EVF_CRASH_REPLAY) != PH_OK) {
+        /* The exception was refused at capture - a before_send that drops
+         * $exception, or a record that decoded to an invalid exception. That is
+         * deterministic: retaining the record would re-offer and re-refuse it on
+         * every launch forever. Discard it as terminally handled. */
+        ph_signal_crash_handoff_complete(dir);
         return 0;
+    }
 
     ph_log(PH_LOG_WARN, "signal_crash: queued a %s from a previous run", name);
     return 1;

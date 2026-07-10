@@ -67,6 +67,12 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+static int drop_exceptions(const char *event, ph_props *props, void *user) {
+    (void)props;
+    (void)user;
+    return strcmp(event, "$exception") == 0 ? 0 : 1; /* 0 vetoes the event */
+}
+
 #ifndef _WIN32
 static void dummy_sig_handler(int sig) { (void)sig; }
 static void chain_exit_handler(int sig) {
@@ -290,6 +296,48 @@ void suite_crash(void) {
     content = read_file(recpath, &clen);
     CHECK_MSG(content == NULL || clen == 0, "corrupt crash record must be discarded");
     if (content) free(content);
+
+    ph_shutdown();
+    remove(recpath);
+
+    /* --- a before_send that drops $exception must not replay forever: the
+     *     record is cleared on a terminal capture veto, not retained --- */
+    temp_dir(dir, sizeof dir);
+    MKDIR(dir);
+    snprintf(recpath, sizeof recpath, "%s/%s", dir, PH_CRASH_FILENAME);
+    remove(recpath);
+    memset(&a, 0, sizeof a);
+    a.sig = SIGSEGV;
+    a.module_count = 1;
+    strcpy(a.modules[0], "crash_demo.exe");
+    a.frame_count = 1;
+    a.frame_module[0] = 0;
+    a.frame_off[0] = 0x1361;
+    n = ph_crash_encode(&a, rec, sizeof rec);
+    write_bytes(recpath, rec, n);
+
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_crash";
+    cfg.api_host = "http://127.0.0.1:9/ingest";
+    cfg.distinct_id = "anon-c";
+    cfg.flush_at = 100000;
+    cfg.flush_interval_ms = 60000;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    cfg.offline_path = dir;
+    cfg.crash_handler = 0;
+    cfg.before_send = drop_exceptions;
+    CHECK(ph_init(&cfg) == PH_OK);
+    mock_reset();
+    mock_install();
+
+    CHECK(ph_signal_crash_replay(dir) == 0); /* vetoed at capture, not queued */
+    CHECK(mock_batch_count() == 0);
+    content = read_file(recpath, &clen);
+    CHECK_MSG(content == NULL || clen == 0,
+              "crash record must be cleared when before_send drops the exception");
+    if (content) free(content);
+    CHECK(ph_signal_crash_replay(dir) == 0); /* nothing lingers to replay again */
 
     ph_shutdown();
     remove(recpath);
