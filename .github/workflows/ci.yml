@@ -39,7 +39,8 @@ jobs:
         run: |
           zig cc -std=c11 -D_GNU_SOURCE -fsanitize=address,undefined -fno-omit-frame-pointer \
             -Iinclude -Isrc -Ithird_party/sdefl \
-            src/*.c tests/*.c -lpthread -ldl -o posthog_tests_san
+            src/*.c tests/test_*.c tests/mock_transport.c \
+            -lpthread -ldl -o posthog_tests_san
           ./posthog_tests_san
 
   fuzz:

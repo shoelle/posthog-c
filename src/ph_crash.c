@@ -14,6 +14,13 @@
  *     reuses the posthog_exception path (ph_capture_exception) rather than
  *     re-implementing $exception building.
  */
+#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
+
 #include "ph_crash.h"
 #include "posthog.h"
 #include "ph_internal.h"
