@@ -14,5 +14,6 @@ void mock_set_flags_response(const char *json); /* body fetch() returns for /fla
 int mock_batch_count(void);
 const char *mock_batch(int i);  /* body of the i-th captured batch, or NULL */
 const char *mock_last_fetch_url(void);
+const char *mock_last_fetch_body(void);
 
 #endif /* MOCK_TRANSPORT_H */

@@ -310,8 +310,11 @@ void ph_capture_exception(const ph_exception *ex);
 /* --- Feature flags ----------------------------------------------
  *
  * Remote evaluation (POST /flags/), read from a local cache. `preload_flags`
- * fetches during ph_init; the SDK re-fetches after ph_identify, and
- * ph_reload_feature_flags() forces a refresh on demand.
+ * fetches during ph_init. Identity/group changes synchronously invalidate the
+ * old evaluation context and schedule a background refresh; reads use their
+ * supplied fallback (or return PH_ERR) until it completes. Call
+ * ph_reload_feature_flags() after an identity/group change when the caller
+ * requires fresh values before continuing.
  */
 int ph_is_feature_enabled(const char *key, int fallback);
 

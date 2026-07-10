@@ -27,26 +27,51 @@ static ph_flag *find_locked(const char *key) {
     return NULL;
 }
 
-void ph__flags_ingest(const char *json, size_t len) {
+static int flag_value_same(const ph_flag *a, const ph_flag *b) {
+    if (a->enabled != b->enabled || a->has_variant != b->has_variant) return 0;
+    return !a->has_variant || strcmp(a->variant, b->variant) == 0;
+}
+
+static int quota_limited(const ph_jv *root) {
+    const ph_jv *quota = ph_jv_get(root, "quotaLimited");
+    int i;
+    if (ph_jv_type_of(quota) != PH_JV_ARR) return 0;
+    for (i = 0; i < ph_jv_len(quota); i++) {
+        const char *s = ph_jv_str(ph_jv_at(quota, i));
+        if (s && strcmp(s, "feature_flags") == 0) return 1;
+    }
+    return 0;
+}
+
+/* Apply a response only to the identity/group generation that requested it.
+ * A slower, older request must never overwrite a newer user's cache. */
+static void flags_ingest_for_context(const char *json, size_t len,
+                                     uint64_t context_gen) {
     ph_jv *root = ph_jv_parse(json, len);
     const ph_jv *flags;
-    int i;
+    ph_flag parsed[PH_MAX_FLAGS];
+    int parsed_count = 0;
+    int partial, i;
     if (!root) return;
+    if (quota_limited(root)) {
+        ph_log(PH_LOG_WARN, "flags: quota limited; retaining same-context cache");
+        ph_jv_free(root);
+        return;
+    }
     flags = ph_jv_get(root, "flags");
     if (ph_jv_type_of(flags) != PH_JV_OBJ) {
         ph_jv_free(root);
         return;
     }
 
-    ph_mutex_lock(&g_ph.lock);
-    g_ph.flag_count = 0;
-    for (i = 0; i < ph_jv_len(flags) && g_ph.flag_count < PH_MAX_FLAGS; i++) {
+    partial = ph_jv_bool(ph_jv_get(root, "errorsWhileComputingFlags"));
+    for (i = 0; i < ph_jv_len(flags) && parsed_count < PH_MAX_FLAGS; i++) {
         const char *key = ph_jv_key_at(flags, i);
         const ph_jv *f = ph_jv_val_at(flags, i);
         const ph_jv *variant = ph_jv_get(f, "variant");
         const ph_jv *meta = ph_jv_get(f, "metadata");
         const ph_jv *payload = meta ? ph_jv_get(meta, "payload") : NULL;
-        ph_flag *slot = &g_ph.flags[g_ph.flag_count];
+        ph_flag *slot = &parsed[parsed_count];
         if (!key) continue;
         memset(slot, 0, sizeof(*slot));
         ph_copy_capped(slot->key, PH_KEY_CAP, key);
@@ -59,10 +84,52 @@ void ph__flags_ingest(const char *json, size_t len) {
             slot->has_payload = 1;
             ph_copy_capped(slot->payload, PH_FLAG_PAYLOAD_CAP, ph_jv_str(payload));
         }
-        g_ph.flag_count++;
+        parsed_count++;
+    }
+
+    ph_mutex_lock(&g_ph.lock);
+    if (context_gen != g_ph.flags_context_gen) {
+        ph_mutex_unlock(&g_ph.lock);
+        ph_jv_free(root);
+        return;
+    }
+
+    if (!partial) {
+        ph_flag next[PH_MAX_FLAGS];
+        int next_count = parsed_count;
+        for (i = 0; i < parsed_count; i++) {
+            ph_flag *old = find_locked(parsed[i].key);
+            next[i] = parsed[i];
+            if (old && old->called_sent && flag_value_same(old, &parsed[i]))
+                next[i].called_sent = 1;
+        }
+        if (next_count > 0)
+            memcpy(g_ph.flags, next, (size_t)next_count * sizeof(next[0]));
+        g_ph.flag_count = next_count;
+    } else {
+        /* PostHog marks partial responses so SDKs retain flags that were not
+         * recomputed. Replace only the entries explicitly returned. */
+        for (i = 0; i < parsed_count; i++) {
+            ph_flag *old = find_locked(parsed[i].key);
+            int called = old && old->called_sent && flag_value_same(old, &parsed[i]);
+            if (!old) {
+                if (g_ph.flag_count >= PH_MAX_FLAGS) continue;
+                old = &g_ph.flags[g_ph.flag_count++];
+            }
+            *old = parsed[i];
+            old->called_sent = called;
+        }
     }
     ph_mutex_unlock(&g_ph.lock);
     ph_jv_free(root);
+}
+
+void ph__flags_ingest(const char *json, size_t len) {
+    uint64_t context_gen;
+    ph_mutex_lock(&g_ph.lock);
+    context_gen = g_ph.flags_context_gen;
+    ph_mutex_unlock(&g_ph.lock);
+    flags_ingest_for_context(json, len, context_gen);
 }
 
 static void flags_url(char *out, size_t cap) {
@@ -76,6 +143,7 @@ void ph__flags_fetch(void) {
     ph_transport t;
     char url[PH_HOST_CAP + 16];
     char *resp;
+    uint64_t context_gen;
     int status, i;
 
     /* Build {"api_key","distinct_id","groups":{...}}. Snapshot identity under
@@ -84,6 +152,7 @@ void ph__flags_fetch(void) {
     ph_strbuf_append_cstr(&body, "{\"api_key\":");
     ph_json_cstr(&body, g_ph.api_key);
     ph_mutex_lock(&g_ph.lock);
+    context_gen = g_ph.flags_context_gen;
     ph_strbuf_append_cstr(&body, ",\"distinct_id\":");
     ph_json_cstr(&body, g_ph.distinct_id);
     if (g_ph.group_count > 0) {
@@ -95,6 +164,26 @@ void ph__flags_fetch(void) {
             ph_json_cstr(&body, g_ph.group_keys[i]);
         }
         ph_strbuf_append_char(&body, '}');
+    }
+    if (g_ph.flag_person_props.count > 0) {
+        ph_strbuf_append_cstr(&body, ",\"person_properties\":");
+        ph_serialize_props_object(&g_ph.flag_person_props, &body);
+    }
+    {
+        int have_group_props = 0;
+        for (i = 0; i < g_ph.group_count; i++) {
+            if (g_ph.group_props[i].count <= 0) continue;
+            if (!have_group_props) {
+                ph_strbuf_append_cstr(&body, ",\"group_properties\":{");
+                have_group_props = 1;
+            } else {
+                ph_strbuf_append_char(&body, ',');
+            }
+            ph_json_cstr(&body, g_ph.group_types[i]);
+            ph_strbuf_append_char(&body, ':');
+            ph_serialize_props_object(&g_ph.group_props[i], &body);
+        }
+        if (have_group_props) ph_strbuf_append_char(&body, '}');
     }
     ph_mutex_unlock(&g_ph.lock);
     ph_strbuf_append_char(&body, '}');
@@ -124,7 +213,7 @@ void ph__flags_fetch(void) {
     status = t.fetch(t.self, url, body.data ? body.data : "{}", body.len,
                      g_ph.request_timeout_ms, resp, PH_FLAGS_RESP_CAP);
     if (status >= 200 && status < 300)
-        ph__flags_ingest(resp, strlen(resp));
+        flags_ingest_for_context(resp, strlen(resp), context_gen);
     else
         ph_log(PH_LOG_WARN, "flags fetch to %s failed (status %d)", url, status);
 
@@ -135,12 +224,16 @@ void ph__flags_fetch(void) {
 /* --- accessors + public flag API -------------------------------------- */
 
 /* Deduped exposure event, emitted the first time a flag value is read. */
-static void emit_ff_called(const char *key, const char *value) {
+static void emit_ff_called(const char *key, const char *value, int has_variant,
+                           int enabled) {
     ph_props p;
     if (!g_ph.enabled) return;
     ph_props_init(&p);
     ph_props_set_str(&p, "$feature_flag", key);
-    ph_props_set_str(&p, "$feature_flag_response", value);
+    if (has_variant)
+        ph_props_set_str(&p, "$feature_flag_response", value);
+    else
+        ph_props_set_bool(&p, "$feature_flag_response", enabled);
     ph__submit_event(PH_EV_CAPTURE, 0, "$feature_flag_called", NULL, &p, -1, 1, NULL, 0);
 }
 
@@ -149,7 +242,7 @@ static void emit_ff_called(const char *key, const char *value) {
  * Returns 1 if found (filling `value`), 0 otherwise. Sets *emit when a
  * (first-time) exposure event should be sent. */
 static int resolve(const char *key, char *value, size_t vcap, int *enabled,
-                   int *emit) {
+                    int *has_variant, int *emit) {
     ph_flag *f;
     int found = 0;
     *emit = 0;
@@ -158,6 +251,7 @@ static int resolve(const char *key, char *value, size_t vcap, int *enabled,
     if (f) {
         found = 1;
         if (enabled) *enabled = f->enabled;
+        if (has_variant) *has_variant = f->has_variant;
         ph_copy_capped(value, vcap, f->has_variant ? f->variant : (f->enabled ? "true" : "false"));
         if (g_ph.send_feature_flag_events && !f->called_sent) {
             f->called_sent = 1;
@@ -170,22 +264,22 @@ static int resolve(const char *key, char *value, size_t vcap, int *enabled,
 
 int ph__flags_is_enabled(const char *key, int fallback) {
     char value[PH_FLAG_VARIANT_CAP];
-    int enabled = fallback, emit = 0;
+    int enabled = fallback, has_variant = 0, emit = 0;
     int found;
     if (!key) return fallback;
-    found = resolve(key, value, sizeof(value), &enabled, &emit);
-    if (emit) emit_ff_called(key, value);
+    found = resolve(key, value, sizeof(value), &enabled, &has_variant, &emit);
+    if (emit) emit_ff_called(key, value, has_variant, enabled);
     return found ? enabled : fallback;
 }
 
 ph_result ph__flags_get(const char *key, char *out, int cap) {
     char value[PH_FLAG_VARIANT_CAP];
-    int emit = 0, found;
+    int enabled = 0, has_variant = 0, emit = 0, found;
     if (out && cap > 0) out[0] = '\0';
     if (!key) return PH_ERR;
-    found = resolve(key, value, sizeof(value), NULL, &emit);
+    found = resolve(key, value, sizeof(value), &enabled, &has_variant, &emit);
     if (found && out && cap > 0) ph_copy_capped(out, (size_t)cap, value);
-    if (emit) emit_ff_called(key, value);
+    if (emit) emit_ff_called(key, value, has_variant, enabled);
     return found ? PH_OK : PH_ERR;
 }
 

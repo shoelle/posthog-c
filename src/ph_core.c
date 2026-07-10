@@ -38,6 +38,22 @@ static void gen_anon_id(char *out) {
     ph_copy_capped(out, PH_DISTINCT_ID_CAP, uuid);
 }
 
+/* Caller holds g_ph.lock. A flag value is meaningful only for the exact
+ * identity + group context that produced it. Clear synchronously so a caller
+ * can never observe the previous user's value while an async refresh runs. */
+static void flags_context_changed_locked(void) {
+    g_ph.flag_count = 0;
+    g_ph.flags_context_gen++;
+    if (g_ph.flags_context_gen == 0) g_ph.flags_context_gen = 1;
+}
+
+static void request_flags_refetch(void) {
+    ph_mutex_lock(&g_ph.flush_lock);
+    g_ph.flags_refetch = 1;
+    ph_mutex_unlock(&g_ph.flush_lock);
+    ph__sender_wake();
+}
+
 void ph_log(ph_log_level level, const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -103,11 +119,13 @@ ph_result ph_init(const ph_config *cfg) {
     ph_mutex_init(&g_ph.flush_lock);
     ph_cond_init(&g_ph.idle_cond);
     ph_props_init(&g_ph.super);
+    ph_props_init(&g_ph.flag_person_props);
     atomic_init(&g_ph.seq, 0);
     atomic_init(&g_ph.st_sent, 0);
     atomic_init(&g_ph.st_failed, 0);
     atomic_init(&g_ph.st_retries, 0);
     atomic_init(&g_ph.st_before_send_dropped, 0);
+    g_ph.flags_context_gen = 1;
 
     if (cfg->distinct_id && cfg->distinct_id[0])
         ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, cfg->distinct_id);
@@ -324,16 +342,18 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     ph_mutex_lock(&g_ph.lock);
     ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, distinct_id);
     g_ph.identified = 1;
+    if (set_props)
+        g_ph.flag_person_props = *set_props;
+    else
+        ph_props_init(&g_ph.flag_person_props);
+    flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
     /* $identify builds a profile regardless of policy (profile_mode = 0). */
     ph__submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
 
     /* Identity changed -> re-evaluate flags. Done on the sender thread so
      * ph_identify never blocks on the network. */
-    ph_mutex_lock(&g_ph.flush_lock);
-    g_ph.flags_refetch = 1;
-    ph_mutex_unlock(&g_ph.flush_lock);
-    ph__sender_wake();
+    request_flags_refetch();
 }
 
 void ph_alias(const char *new_id, const char *old_id) {
@@ -350,14 +370,17 @@ void ph_reset(void) {
     gen_anon_id(g_ph.distinct_id);
     g_ph.identified = 0;
     ph_props_init(&g_ph.super);
+    ph_props_init(&g_ph.flag_person_props);
     g_ph.group_count = 0;
+    flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
+    request_flags_refetch();
 }
 
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_props p;
     char did[PH_KEY_CAP * 2 + 4];
-    int i, found;
+    int i, found, context_changed = 0;
     if (!g_ph.enabled || !type || !type[0] || !key || !key[0]) return;
 
     /* Remember the membership so later events carry $groups. */
@@ -365,7 +388,14 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     found = 0;
     for (i = 0; i < g_ph.group_count; i++) {
         if (strcmp(g_ph.group_types[i], type) == 0) {
+            /* The key or the supplied group properties may affect evaluation;
+             * invalidate even when the membership key itself is unchanged. */
+            context_changed = 1;
             ph_copy_capped(g_ph.group_keys[i], PH_KEY_CAP, key);
+            if (set_props)
+                g_ph.group_props[i] = *set_props;
+            else
+                ph_props_init(&g_ph.group_props[i]);
             found = 1;
             break;
         }
@@ -373,9 +403,16 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     if (!found && g_ph.group_count < PH_MAX_GROUPS) {
         ph_copy_capped(g_ph.group_types[g_ph.group_count], PH_KEY_CAP, type);
         ph_copy_capped(g_ph.group_keys[g_ph.group_count], PH_KEY_CAP, key);
+        if (set_props)
+            g_ph.group_props[g_ph.group_count] = *set_props;
+        else
+            ph_props_init(&g_ph.group_props[g_ph.group_count]);
         g_ph.group_count++;
+        context_changed = 1;
     }
+    if (context_changed) flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
+    if (context_changed) request_flags_refetch();
 
     /* Emit $groupidentify. $group_type/$group_key ride top-level; the set
      * props are bundled under $group_set by the serializer. */

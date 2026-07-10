@@ -9,7 +9,7 @@ relevant native/WASM verification are green.
 
 ### Ship blockers
 
-- [ ] **Keep feature flags scoped to the current identity and groups.**
+- [x] **Keep feature flags scoped to the current identity and groups.**
   `ph_reset()` must invalidate the previous user's cache; `ph_identify()` and
   `ph_group()` must not leave a window where an old value is exposed under a new
   identity. Define an explicit readiness/loading contract, preserve last-known

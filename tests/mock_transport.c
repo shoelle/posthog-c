@@ -13,6 +13,7 @@ static int g_count;
 static int g_status = 200;
 static char *g_flags_response;
 static char g_last_fetch_url[512];
+static char g_last_fetch_body[4096];
 static char g_retry_after[64];
 static char g_send_body[256];
 
@@ -59,8 +60,6 @@ static int mock_fetch(void *self, const char *url, const char *body, size_t len,
                       int timeout_ms, char *out, size_t out_cap) {
     int s;
     (void)self;
-    (void)body;
-    (void)len;
     (void)timeout_ms;
     ensure();
     ph_mutex_lock(&g_lock);
@@ -71,6 +70,14 @@ static int mock_fetch(void *self, const char *url, const char *body, size_t len,
         g_last_fetch_url[n] = '\0';
     } else {
         g_last_fetch_url[0] = '\0';
+    }
+    if (body) {
+        size_t n = len;
+        if (n >= sizeof(g_last_fetch_body)) n = sizeof(g_last_fetch_body) - 1;
+        memcpy(g_last_fetch_body, body, n);
+        g_last_fetch_body[n] = '\0';
+    } else {
+        g_last_fetch_body[0] = '\0';
     }
     if (out && out_cap > 0) {
         const char *r = g_flags_response ? g_flags_response : "{\"flags\":{}}";
@@ -117,6 +124,7 @@ void mock_reset(void) {
     g_count = 0;
     g_status = 200;
     g_last_fetch_url[0] = '\0';
+    g_last_fetch_body[0] = '\0';
     g_retry_after[0] = '\0';
     g_send_body[0] = '\0';
     free(g_flags_response);
@@ -176,6 +184,15 @@ const char *mock_last_fetch_url(void) {
     ensure();
     ph_mutex_lock(&g_lock);
     p = g_last_fetch_url;
+    ph_mutex_unlock(&g_lock);
+    return p;
+}
+
+const char *mock_last_fetch_body(void) {
+    const char *p;
+    ensure();
+    ph_mutex_lock(&g_lock);
+    p = g_last_fetch_body;
     ph_mutex_unlock(&g_lock);
     return p;
 }

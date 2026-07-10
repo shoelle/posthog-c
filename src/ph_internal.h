@@ -183,11 +183,14 @@ typedef struct ph_ctx {
     ph_props super;
     char group_types[PH_MAX_GROUPS][PH_KEY_CAP];
     char group_keys[PH_MAX_GROUPS][PH_KEY_CAP];
+    ph_props group_props[PH_MAX_GROUPS]; /* /flags group_properties overrides */
     int group_count;
+    ph_props flag_person_props; /* /flags person_properties from identify */
 
     /* Feature-flag cache (guarded by lock). */
     ph_flag flags[PH_MAX_FLAGS];
     int flag_count;
+    uint64_t flags_context_gen; /* bumped when identity/groups change */
 
     /* Timing epoch: one clock reading at init; the sender reconstructs each
      * event's wall-clock time from its monotonic tick against this. */
