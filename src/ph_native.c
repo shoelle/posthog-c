@@ -130,12 +130,35 @@ static int durable_close(FILE *f) {
     return ok;
 }
 
+/* Shrink an open file back to `size` bytes - used to roll back a partial record
+ * after a short write so nothing merges into the next append. */
+static int truncate_file(FILE *f, long size) {
+#if defined(_WIN32)
+    return _chsize_s(_fileno(f), (long long)size) == 0;
+#else
+    return ftruncate(fileno(f), (off_t)size) == 0;
+#endif
+}
+
 static int atomic_replace(const char *tmp, const char *path) {
 #if defined(_WIN32)
     return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING |
                                   MOVEFILE_WRITE_THROUGH) != 0;
 #else
     return rename(tmp, path) == 0;
+#endif
+}
+
+/* Make a create/rename in the offline directory durable. On POSIX a file's own
+ * fsync does not persist its parent directory entry, so fsync the directory too;
+ * on Windows MOVEFILE_WRITE_THROUGH already commits the rename. */
+static void fsync_offline_dir(void) {
+#if !defined(_WIN32)
+    int fd = open(g_ph.offline_path, O_RDONLY);
+    if (fd >= 0) {
+        (void)fsync(fd);
+        (void)close(fd);
+    }
 #endif
 }
 
@@ -149,6 +172,7 @@ static int write_atomic(const char *path, const char *data, size_t len) {
     ok = len == 0 || fwrite(data, 1, len, f) == len;
     if (!durable_close(f)) ok = 0;
     if (ok) ok = atomic_replace(tmp, path);
+    if (ok) fsync_offline_dir();
     if (!ok) remove(tmp);
     return ok;
 }
@@ -241,21 +265,30 @@ static int offline_spill(const char *body, size_t len) {
     char path[PH_PATH_CAP + 32];
     FILE *f;
     int ok;
+    long start;
     if (!g_ph.offline_path[0] || len == 0) return 0;
     if (!ensure_offline_dir()) return 0;
     offline_spill_path(path, sizeof(path));
     if (!offline_enforce_cap(path, len)) return 0;
+    start = file_size(path); /* last clean record boundary; <0 => new file */
     f = open_private_file(path, 1);
     if (!f) {
         ph_log(PH_LOG_WARN, "offline: cannot open spill file %s", path);
         return 0;
     }
-    /* Only newline-terminate a fully-written record; a short write leaves the
-     * partial unterminated so offline_replay's torn-tail guard drops it. */
     ok = fwrite(body, 1, len, f) == len && fputc('\n', f) != EOF;
-    if (!ok)
+    if (!ok) {
+        /* A short write (disk full/quota) must not leave a partial, unterminated
+         * record: the next append would concatenate behind it, the newline that
+         * append later writes would hide the tear from offline_replay's torn-tail
+         * guard, and the merged line would then fail to parse and be lost
+         * uncounted. Roll back to the last clean record boundary instead. */
         ph_log(PH_LOG_WARN, "offline: short write spilling to %s", path);
+        fflush(f);
+        (void)truncate_file(f, start < 0 ? 0 : start);
+    }
     if (!durable_close(f)) ok = 0;
+    if (ok && start < 0) fsync_offline_dir(); /* new file: persist the dir entry */
     return ok;
 }
 
