@@ -89,9 +89,11 @@ zig build fuzz         # fuzz the two network-facing parsers (JSON + HTTP)
 zig build run-example  # run the C quickstart
 ```
 
-`zig build live-contract` is intentionally separate and requires
-`POSTHOG_API_KEY`; maintainers run it against a disposable project before a
-release.
+`zig build live-contract` is intentionally separate: it sends a real event and
+reads a flag against a live project, so it needs `POSTHOG_API_KEY` (use a
+disposable one). Copy [`.env.example`](.env.example) to `.env` (gitignored) and
+run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or
+`scripts/live-contract.sh` elsewhere. Real HTTPS delivery is Windows-only today.
 
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
 
