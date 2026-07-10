@@ -466,6 +466,17 @@ static int sender_backoff_wait(int ms) {
 
 static void persist_run(ph_event *evs, int n);
 
+/* Capture records only a suspend-aware monotonic tick. Before shaping a batch,
+ * recalibrate the init-time wall mapping when NTP/manual clock changes create a
+ * material skew. This stays entirely on the sender thread. */
+static void refresh_clock_epoch(void) {
+    const uint64_t threshold_ns = 1000000000ull;
+    uint64_t mono = ph_now_mono_ns();
+    uint64_t wall = ph_now_wall_ns();
+    g_ph.epoch_wall_ns = ph_correct_wall_epoch(
+        g_ph.epoch_wall_ns, g_ph.epoch_mono_ns, wall, mono, threshold_ns);
+}
+
 static void spill_batch(ph_event *evs, int n) {
     n = scrub_events(evs, n);
     if (n == 0) return;
@@ -561,6 +572,7 @@ static void persist_run(ph_event *evs, int n) {
     }
 
     ph_strbuf_init(&body);
+    refresh_clock_epoch();
     ph_serialize_batch(&g_ph, evs, n, &body);
     if (body.oom) {
         ph_strbuf_free(&body);
@@ -600,6 +612,7 @@ static int send_run(ph_event *evs, int n) {
     int blocked;
 
     ph_strbuf_init(&body);
+    refresh_clock_epoch();
     ph_serialize_batch(&g_ph, evs, n, &body);
     if (body.oom) {
         ph_strbuf_free(&body);

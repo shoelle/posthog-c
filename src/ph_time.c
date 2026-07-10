@@ -1,6 +1,7 @@
 #include "ph_time.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -9,27 +10,38 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <bcrypt.h>
+#elif defined(__APPLE__)
+#include <mach/mach_time.h>
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__)
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/random.h>
+#include <unistd.h>
 #endif
 
 /* --- Clocks ----------------------------------------------------------- */
 
 uint64_t ph_now_mono_ns(void) {
 #if defined(_WIN32)
-    static LARGE_INTEGER freq; /* fixed for the life of the process */
-    LARGE_INTEGER now;
-    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&now);
-    /* Scale to ns without overflow: (whole seconds) + (remainder ticks). */
-    {
-        uint64_t q = (uint64_t)freq.QuadPart;
-        uint64_t t = (uint64_t)now.QuadPart;
-        uint64_t secs = t / q;
-        uint64_t rem = t % q;
-        return secs * 1000000000ull + (rem * 1000000000ull) / q;
-    }
+    /* GetTickCount64 includes time spent suspended. Millisecond resolution is
+     * sufficient for wire timestamps and avoids racy lazy clock state. */
+    return (uint64_t)GetTickCount64() * 1000000ull;
+#elif defined(__APPLE__)
+    mach_timebase_info_data_t info;
+    uint64_t ticks = mach_continuous_time(); /* unlike mach_absolute_time, includes sleep */
+    uint64_t whole, rem;
+    mach_timebase_info(&info);
+    whole = ticks / info.denom;
+    rem = ticks % info.denom;
+    return whole * info.numer + (rem * info.numer) / info.denom;
 #else
     struct timespec ts;
+#if defined(CLOCK_BOOTTIME)
+    clock_gettime(CLOCK_BOOTTIME, &ts); /* Linux: includes system suspend */
+#else
     clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 #endif
 }
@@ -52,9 +64,46 @@ uint64_t ph_now_wall_ns(void) {
 }
 
 uint64_t ph_seed_u64(void) {
-    /* Mix a few independent sources; splitmix64-finalize so the low bits are
-     * well distributed. Good enough to salt UUIDs, not for security. */
-    uint64_t x = ph_now_wall_ns();
+    uint64_t x = 0;
+#if defined(_WIN32)
+    if (BCryptGenRandom(NULL, (PUCHAR)&x, (ULONG)sizeof(x),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0)
+        return x;
+#elif defined(__APPLE__)
+    arc4random_buf(&x, sizeof(x));
+    return x;
+#elif defined(__linux__) && !defined(__EMSCRIPTEN__)
+    {
+        unsigned char *p = (unsigned char *)&x;
+        size_t have = 0;
+        while (have < sizeof(x)) {
+            ssize_t n = getrandom(p + have, sizeof(x) - have, 0);
+            if (n > 0) have += (size_t)n;
+            else if (n < 0 && errno == EINTR) continue;
+            else break;
+        }
+        if (have == sizeof(x)) return x;
+        /* Old kernels/seccomp may reject getrandom. Fall back to the OS random
+         * device before using the non-cryptographic emergency mixer below. */
+        {
+            int fd = open("/dev/urandom", O_RDONLY);
+            if (fd >= 0) {
+                have = 0;
+                while (have < sizeof(x)) {
+                    ssize_t n = read(fd, p + have, sizeof(x) - have);
+                    if (n > 0) have += (size_t)n;
+                    else if (n < 0 && errno == EINTR) continue;
+                    else break;
+                }
+                close(fd);
+                if (have == sizeof(x)) return x;
+            }
+        }
+    }
+#endif
+    /* Emergency fallback for restricted/older environments (including WASM,
+     * where this native UUID salt is unused). */
+    x = ph_now_wall_ns();
     x ^= ph_now_mono_ns() * 0x9E3779B97F4A7C15ull;
     x ^= (uint64_t)(uintptr_t)&x << 17;
 #if defined(_WIN32)
@@ -66,6 +115,23 @@ uint64_t ph_seed_u64(void) {
     x *= 0x94D049BB133111EBull;
     x ^= x >> 31;
     return x;
+}
+
+uint64_t ph_correct_wall_epoch(uint64_t epoch_wall_ns, uint64_t epoch_mono_ns,
+                               uint64_t now_wall_ns, uint64_t now_mono_ns,
+                               uint64_t threshold_ns) {
+    uint64_t delta, predicted, skew;
+    if (now_mono_ns < epoch_mono_ns) return epoch_wall_ns;
+    delta = now_mono_ns - epoch_mono_ns;
+    predicted = UINT64_MAX - epoch_wall_ns < delta
+                    ? UINT64_MAX : epoch_wall_ns + delta;
+    skew = now_wall_ns >= predicted ? now_wall_ns - predicted
+                                    : predicted - now_wall_ns;
+    if (skew <= threshold_ns) return epoch_wall_ns;
+    if (now_wall_ns >= predicted)
+        return UINT64_MAX - epoch_wall_ns < skew
+                   ? UINT64_MAX : epoch_wall_ns + skew;
+    return skew > epoch_wall_ns ? 0 : epoch_wall_ns - skew;
 }
 
 /* --- ISO-8601 --------------------------------------------------------- */

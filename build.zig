@@ -53,6 +53,7 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
         .windows => {
             step.linkSystemLibrary("ws2_32"); // Winsock (plaintext HTTP transport)
             step.linkSystemLibrary("winhttp"); // HTTPS transport (ph_tls.c)
+            step.linkSystemLibrary("bcrypt"); // OS entropy for UUID/reset-id salt
         },
         // Linux: dl for dladdr (signal_crash module lookup); pthread for the
         // sender thread. glibc backtrace() lives in libc.

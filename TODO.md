@@ -82,11 +82,11 @@ relevant native/WASM verification are green.
   replay rejects, over-cap spill drops, and persistence failures consistently;
   define whether `ph_dropped_events()` includes `before_send` and delivery loss;
   keep `on_stats` and log messages aligned with those definitions.
-- [ ] **Use stronger init-time entropy and document fork behavior.** Prefer OS
+- [x] **Use stronger init-time entropy and document fork behavior.** Prefer OS
   randomness for anonymous IDs and UUID salt on every supported native platform.
   Either make post-fork use safe or state that the SDK must be initialized again
   in the child.
-- [ ] **Keep capture timestamps correct across suspend and wall-clock changes.**
+- [x] **Keep capture timestamps correct across suspend and wall-clock changes.**
   Audit the monotonic-to-wall reconstruction on each platform (Linux
   `CLOCK_MONOTONIC` excludes suspend) and use an appropriate boot-time clock or
   bounded sender-side correction without adding wall-clock work to capture.

@@ -20,9 +20,18 @@ uint64_t ph_now_mono_ns(void);
 /* Wall-clock nanoseconds since the Unix epoch (UTC). Sender/init only. */
 uint64_t ph_now_wall_ns(void);
 
-/* A 64-bit seed for the per-init UUID salt. Not cryptographic - just enough
- * entropy that two processes don't mint colliding UUIDv7s. Init only. */
+/* A 64-bit seed from the operating system RNG for the per-init UUID salt and
+ * reset IDs. Falls back to a clock/process mixer only when the OS source is
+ * unavailable. Init/control path only. */
 uint64_t ph_seed_u64(void);
+
+/* Pure sender-side wall/monotonic calibration. If the wall time predicted by
+ * the current epoch differs from now by more than threshold_ns, shift the wall
+ * epoch by that skew. Capture still reads only the suspend-aware monotonic
+ * clock. */
+uint64_t ph_correct_wall_epoch(uint64_t epoch_wall_ns, uint64_t epoch_mono_ns,
+                               uint64_t now_wall_ns, uint64_t now_mono_ns,
+                               uint64_t threshold_ns);
 
 /* Format wall-clock nanoseconds as "YYYY-MM-DDTHH:MM:SS.mmmZ" (millisecond
  * precision, always UTC). Writes at most `cap` bytes including the NUL. */

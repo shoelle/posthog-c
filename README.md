@@ -108,6 +108,10 @@ exe.linkLibrary(ph.artifact("posthog")); // static lib; carries its own platform
 exe.addIncludePath(ph.path("include"));  // <posthog.h> / <posthog.hpp>
 ```
 
+The native SDK owns threads and mutexes and is not fork-safe after `ph_init()`.
+On POSIX, shut it down before `fork()` and initialize a fresh instance in each
+process that will emit events; do not call the inherited instance in the child.
+
 ## Roadmap
 
 TODO: Linux/macOS TLS. See [TODO.md](TODO.md) for more.

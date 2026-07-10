@@ -5,6 +5,7 @@
  */
 #include "ph_internal.h"
 #include "ph_str.h"
+#include "ph_time.h"
 #include "test_util.h"
 
 #include <string.h>
@@ -42,6 +43,12 @@ void suite_serialize(void) {
     ph_props p;
     ph_strbuf out;
     setup_ctx(&c);
+
+    /* --- sender-side clock correction ignores jitter but follows real jumps --- */
+    CHECK(ph_correct_wall_epoch(1000, 100, 1150, 200, 50) == 1000);
+    CHECK(ph_correct_wall_epoch(1000, 100, 2000, 200, 50) == 1900);
+    CHECK(ph_correct_wall_epoch(1000, 100, 500, 200, 50) == 400);
+    CHECK(ph_correct_wall_epoch(1000, 100, 9999, 99, 0) == 1000);
 
     /* --- basic capture, mixed prop types, anonymous --- */
     ph_props_init(&p);
