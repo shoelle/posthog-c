@@ -186,7 +186,9 @@ typedef struct ph_config {
     int flush_interval_ms;  /* max wait before a partial flush (default 30000) */
     int max_batch;          /* events per POST (default 50) */
     int max_queue;          /* drop-oldest ring cap (default 1000) */
-    int request_timeout_ms; /* per-POST timeout (default 10000) */
+    int request_timeout_ms; /* whole-request deadline (default 10000). Native
+                             * synchronous DNS elapsed time counts against it,
+                             * but an in-progress libc resolver cannot be cancelled. */
     int max_retries;        /* per-batch retries (exp backoff; 5xx/timeout only)
                              * before spill/drop (default 3) */
     int gzip;               /* gzip /batch/ bodies with Content-Encoding: gzip

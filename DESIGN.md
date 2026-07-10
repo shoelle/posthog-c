@@ -90,6 +90,13 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
   coding, and rejects incomplete or oversized responses. WinHTTP performs the
   HTTPS framing and the SDK rejects a decoded body that exceeds the caller's
   fixed response buffer.
+- **Request deadline.** Plain sockets spend one `request_timeout_ms` budget
+  across DNS elapsed time, connect, send, and receive. WinHTTP divides the same
+  total budget across resolve/connect/send/receive phases and recomputes the
+  remainder before headers and every body read. Retry backoff is interruptible
+  during shutdown. The one portability limit is synchronous libc
+  `getaddrinfo`: its elapsed time counts, but the resolver call itself cannot be
+  cancelled; an already-expired request is abandoned as soon as it returns.
 
 ## 3. Identity, baked at capture
 

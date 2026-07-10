@@ -60,7 +60,7 @@ relevant native/WASM verification are green.
   an unbounded network body before copying to `PH_FLAGS_RESP_CAP`; stream within
   the caller's cap, decode chunked transfer encoding, honor Content-Length, and
   distinguish an oversized/truncated response from valid JSON.
-- [ ] **Make `request_timeout_ms` an end-to-end deadline.** DNS, connect, send,
+- [x] **Make `request_timeout_ms` an end-to-end deadline.** DNS, connect, send,
   and receive must share one deadline so `ph_flush()`/`ph_shutdown()` cannot
   stall past the documented request timeout. Make shutdown interrupt in-flight
   retry/backoff and document any resolver limitation that cannot be cancelled.
@@ -104,7 +104,7 @@ relevant native/WASM verification are green.
   make `backtrace()`/`dladdr()` generally async-signal-safe. Clearly label the
   in-process handler best-effort, keep the known loader/allocation risks visible,
   and ensure macOS either records the real fault PC or documents that it cannot.
-- [ ] **Add real-fault subprocess tests on Linux and macOS.** Exercise handler
+- [x] **Add real-fault subprocess tests on Linux and macOS.** Exercise handler
   chaining, alternate-stack restoration, torn records, replay durability, and
   an actual SIGSEGV/SIGABRT without taking down the test runner.
 
