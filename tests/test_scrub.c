@@ -39,6 +39,18 @@ static int count_occurrences(const char *hay, const char *needle) {
     return n;
 }
 
+/* The $identify and $groupidentify control events may land in one batch or two,
+ * depending on when the background sender wakes (ph_identify wakes it to refetch
+ * flags), so assert on the union of all batches, not just the first. */
+static int any_batch_has(const char *needle) {
+    int i;
+    for (i = 0; i < mock_batch_count(); i++) {
+        const char *b = mock_batch(i);
+        if (b && strstr(b, needle)) return 1;
+    }
+    return 0;
+}
+
 /* --- hooks --- */
 
 static int drop_secret(const char *event, ph_props *props, void *user) {
@@ -161,10 +173,10 @@ void suite_scrub(void) {
         ph_group("company", "privacy-co", &group);
 
         ph_flush(2000);
-        CHECK_CONTAINS(mock_batch(0), "\"$set\":{\"plan\":\"pro\"}");
-        CHECK_CONTAINS(mock_batch(0), "\"$group_set\":{\"seats\":12}");
-        CHECK_NOT_CONTAINS(mock_batch(0), "identify-pii");
-        CHECK_NOT_CONTAINS(mock_batch(0), "group-pii");
+        CHECK(any_batch_has("\"$set\":{\"plan\":\"pro\"}"));
+        CHECK(any_batch_has("\"$group_set\":{\"seats\":12}"));
+        CHECK(!any_batch_has("identify-pii"));
+        CHECK(!any_batch_has("group-pii"));
         ph_shutdown();
     }
 
