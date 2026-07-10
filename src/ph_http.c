@@ -622,7 +622,8 @@ static int read_body_response(ph_socket s, char *out, size_t out_cap,
     int closed = 0, framed = 0;
     int result = PH_HTTP_RESPONSE_TRUNCATED;
 
-    if (out_cap > (size_t)-1 - PH_HTTP_HEADER_CAP - PH_HTTP_CHUNK_OVERHEAD_CAP)
+    /* Reserve the trailing NUL too, so raw_cap + 1 below cannot wrap to 0. */
+    if (out_cap > (size_t)-1 - PH_HTTP_HEADER_CAP - PH_HTTP_CHUNK_OVERHEAD_CAP - 1)
         return PH_HTTP_RESPONSE_TOO_LARGE;
     raw_cap = out_cap + PH_HTTP_HEADER_CAP + PH_HTTP_CHUNK_OVERHEAD_CAP;
     resp = (char *)malloc(raw_cap + 1);
