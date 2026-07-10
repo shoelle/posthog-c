@@ -268,7 +268,7 @@ static void offline_replay(void) {
  * before_send. Returns 1 to keep (blob rewritten in place) or 0 to drop.
  * Non-scalar entries ($groups, $exception_list) are preserved untouched. */
 static int scrub_one(ph_event *e, int run_before_send) {
-    char name[128];
+    char name[PH_EVENT_NAME_CAP];
     char *blob = e->data + e->name_len + e->did_len;
     size_t len = e->blob_len;
     ph_props props;

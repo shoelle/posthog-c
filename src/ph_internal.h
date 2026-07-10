@@ -20,7 +20,6 @@
 #define PH_API_KEY_CAP 96
 #define PH_HOST_CAP 256
 #define PH_RELEASE_CAP 96
-#define PH_DISTINCT_ID_CAP 128
 
 /* Group memberships scoping subsequent events via $groups. A handful is
  * plenty (PostHog's own group types are few: company/project/... - for a

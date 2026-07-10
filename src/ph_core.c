@@ -32,6 +32,39 @@ const char *ph_version(void) { return PH_VERSION_STRING; }
 
 static int def_int(int v, int fallback) { return v > 0 ? v : fallback; }
 
+static int string_over_cap(const char *s, size_t cap) {
+    return s && strlen(s) >= cap;
+}
+
+static ph_result validate_config(const ph_config *cfg) {
+    int i;
+    const char *host;
+    if (!cfg) return PH_ERR_BADARG;
+    if (!cfg->enabled) return PH_OK;
+    if (!cfg->api_key || !cfg->api_key[0]) return PH_ERR_BADARG;
+    host = (cfg->api_host && cfg->api_host[0]) ? cfg->api_host
+                                               : "https://us.i.posthog.com";
+    if (strncmp(host, "http://", 7) != 0 && strncmp(host, "https://", 8) != 0)
+        return PH_ERR_BADARG;
+    if (string_over_cap(cfg->api_key, PH_API_KEY_CAP) ||
+        string_over_cap(host, PH_HOST_CAP) ||
+        string_over_cap(cfg->release, PH_RELEASE_CAP) ||
+        string_over_cap(cfg->offline_path, PH_PATH_CAP) ||
+        string_over_cap(cfg->distinct_id, PH_DISTINCT_ID_CAP))
+        return PH_ERR_BADARG;
+    if (cfg->person_profiles < PH_IDENTIFIED_ONLY || cfg->person_profiles > PH_NEVER)
+        return PH_ERR_BADARG;
+    if (cfg->property_denylist_count < 0 ||
+        cfg->property_denylist_count > PH_MAX_DENYLIST)
+        return PH_ERR_BADARG;
+    if (cfg->property_denylist_count > 0 && !cfg->property_denylist)
+        return PH_ERR_BADARG;
+    for (i = 0; cfg->property_denylist && i < cfg->property_denylist_count; i++)
+        if (string_over_cap(cfg->property_denylist[i], PH_KEY_CAP))
+            return PH_ERR_BADARG;
+    return PH_OK;
+}
+
 static void gen_anon_id(char *out) {
     char uuid[37];
     ph_uuid_v7(ph_now_wall_ns() / 1000000ull, ph_seed_u64(), 0, uuid);
@@ -88,8 +121,10 @@ void ph_config_defaults(ph_config *cfg) {
 /* --- lifecycle -------------------------------------------------------- */
 
 ph_result ph_init(const ph_config *cfg) {
+    ph_result valid;
     if (g_ph.initialized) return PH_ERR;
-    if (!cfg) return PH_ERR_BADARG;
+    valid = validate_config(cfg);
+    if (valid != PH_OK) return valid;
 
     memset(&g_ph, 0, sizeof(g_ph));
 
@@ -285,6 +320,8 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
 
         no_profile = derive_no_profile(profile_mode);
 
+        if (name_len >= PH_EVENT_NAME_CAP) name_len = PH_EVENT_NAME_CAP - 1;
+        if (did_len >= PH_DISTINCT_ID_CAP) did_len = PH_DISTINCT_ID_CAP - 1;
         if (name_len > cap) name_len = cap;
         if (did_len > cap - name_len) did_len = cap - name_len;
 
@@ -332,9 +369,13 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
 /* --- public capture surface ------------------------------------------- */
 
 ph_result ph_capture(const char *event, const ph_props *props) {
+    ph_result r;
+    int truncated;
     if (!g_ph.enabled) return PH_ERR_DISABLED;
     if (!event || !event[0]) return PH_ERR_BADARG;
-    return ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
+    truncated = strlen(event) >= PH_EVENT_NAME_CAP;
+    r = ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
+    return r == PH_OK && truncated ? PH_ERR_TRUNCATED : r;
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
@@ -358,10 +399,14 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
 
 void ph_alias(const char *new_id, const char *old_id) {
     ph_props p;
+    char new_capped[PH_DISTINCT_ID_CAP];
+    char old_capped[PH_DISTINCT_ID_CAP];
     if (!g_ph.enabled || !new_id || !new_id[0] || !old_id || !old_id[0]) return;
+    ph_copy_capped(new_capped, sizeof(new_capped), new_id);
+    ph_copy_capped(old_capped, sizeof(old_capped), old_id);
     ph_props_init(&p);
-    ph_props_set_str(&p, "alias", new_id);
-    ph__submit_event(PH_EV_ALIAS, 0, "$create_alias", old_id, &p, 0, 0, NULL, 0);
+    ph_props_set_str(&p, "alias", new_capped);
+    ph__submit_event(PH_EV_ALIAS, 0, "$create_alias", old_capped, &p, 0, 0, NULL, 0);
 }
 
 void ph_reset(void) {
@@ -380,18 +425,22 @@ void ph_reset(void) {
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_props p;
     char did[PH_KEY_CAP * 2 + 4];
+    char type_capped[PH_KEY_CAP];
+    char key_capped[PH_KEY_CAP];
     int i, found, context_changed = 0;
     if (!g_ph.enabled || !type || !type[0] || !key || !key[0]) return;
+    ph_copy_capped(type_capped, sizeof(type_capped), type);
+    ph_copy_capped(key_capped, sizeof(key_capped), key);
 
     /* Remember the membership so later events carry $groups. */
     ph_mutex_lock(&g_ph.lock);
     found = 0;
     for (i = 0; i < g_ph.group_count; i++) {
-        if (strcmp(g_ph.group_types[i], type) == 0) {
+        if (strcmp(g_ph.group_types[i], type_capped) == 0) {
             /* The key or the supplied group properties may affect evaluation;
              * invalidate even when the membership key itself is unchanged. */
             context_changed = 1;
-            ph_copy_capped(g_ph.group_keys[i], PH_KEY_CAP, key);
+            ph_copy_capped(g_ph.group_keys[i], PH_KEY_CAP, key_capped);
             if (set_props)
                 g_ph.group_props[i] = *set_props;
             else
@@ -401,8 +450,8 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
         }
     }
     if (!found && g_ph.group_count < PH_MAX_GROUPS) {
-        ph_copy_capped(g_ph.group_types[g_ph.group_count], PH_KEY_CAP, type);
-        ph_copy_capped(g_ph.group_keys[g_ph.group_count], PH_KEY_CAP, key);
+        ph_copy_capped(g_ph.group_types[g_ph.group_count], PH_KEY_CAP, type_capped);
+        ph_copy_capped(g_ph.group_keys[g_ph.group_count], PH_KEY_CAP, key_capped);
         if (set_props)
             g_ph.group_props[g_ph.group_count] = *set_props;
         else
@@ -417,14 +466,14 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     /* Emit $groupidentify. $group_type/$group_key ride top-level; the set
      * props are bundled under $group_set by the serializer. */
     ph_props_init(&p);
-    ph_props_set_str(&p, "$group_type", type);
-    ph_props_set_str(&p, "$group_key", key);
+    ph_props_set_str(&p, "$group_type", type_capped);
+    ph_props_set_str(&p, "$group_key", key_capped);
     if (set_props) {
         for (i = 0; i < set_props->count; i++) {
             ph_copy_prop_value(&p, &set_props->items[i]);
         }
     }
-    snprintf(did, sizeof(did), "$%s_%s", type, key);
+    snprintf(did, sizeof(did), "$%s_%s", type_capped, key_capped);
     ph__submit_event(PH_EV_GROUP, 0, "$groupidentify", did, &p, 0, 0, NULL, 0);
 }
 

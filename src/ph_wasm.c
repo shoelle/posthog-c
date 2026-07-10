@@ -123,7 +123,9 @@ ph_result ph_init(const ph_config *cfg) {
         g_identity_ok = 0;
         return PH_OK;
     }
+    if (!cfg->api_key || !cfg->api_key[0]) return PH_ERR_BADARG;
     if (!cfg->distinct_id || cfg->distinct_id[0] == '\0') return PH_ERR_BADARG;
+    if (strlen(cfg->distinct_id) >= PH_DISTINCT_ID_CAP) return PH_ERR_BADARG;
 
     /* Verify the host bootstrapped posthog-js with our install id. We read the
      * host-owned variable synchronously rather than posthog.get_distinct_id(),
@@ -139,36 +141,46 @@ ph_result ph_init(const ph_config *cfg) {
 
 ph_result ph_capture(const char *event, const ph_props *props) {
     char *json;
+    char event_capped[PH_EVENT_NAME_CAP];
     ph_props clean;
+    int truncated;
     if (!g_enabled || !g_identity_ok) return PH_ERR_DISABLED;
     if (!event || !event[0]) return PH_ERR_BADARG;
-    if (!scrub_props(event, props, &clean)) return PH_OK; /* before_send dropped it */
+    truncated = strlen(event) >= sizeof(event_capped);
+    ph_copy_capped(event_capped, sizeof(event_capped), event);
+    if (!scrub_props(event_capped, props, &clean)) return PH_OK; /* before_send dropped it */
     json = props_to_json(&clean);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.capture(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, event, json ? json : "{}");
+    }, event_capped, json ? json : "{}");
     free(json);
-    return PH_OK;
+    return truncated ? PH_ERR_TRUNCATED : PH_OK;
 }
 
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
     char *json;
+    char id_capped[PH_DISTINCT_ID_CAP];
     if (!g_enabled || !g_identity_ok || !distinct_id || !distinct_id[0]) return;
+    ph_copy_capped(id_capped, sizeof(id_capped), distinct_id);
     json = props_to_json(set_props);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.identify(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, distinct_id, json ? json : "{}");
+    }, id_capped, json ? json : "{}");
     free(json);
 }
 
 void ph_alias(const char *new_id, const char *old_id) {
+    char new_capped[PH_DISTINCT_ID_CAP];
+    char old_capped[PH_DISTINCT_ID_CAP];
     if (!g_enabled || !g_identity_ok || !new_id || !old_id) return;
+    ph_copy_capped(new_capped, sizeof(new_capped), new_id);
+    ph_copy_capped(old_capped, sizeof(old_capped), old_id);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.alias(UTF8ToString($0), UTF8ToString($1));
-    }, new_id, old_id);
+    }, new_capped, old_capped);
 }
 
 void ph_reset(void) {
@@ -181,13 +193,17 @@ void ph_reset(void) {
 
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
     char *json;
+    char type_capped[PH_KEY_CAP];
+    char key_capped[PH_KEY_CAP];
     if (!g_enabled || !g_identity_ok || !type || !key) return;
+    ph_copy_capped(type_capped, sizeof(type_capped), type);
+    ph_copy_capped(key_capped, sizeof(key_capped), key);
     json = props_to_json(set_props);
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.group(UTF8ToString($0), UTF8ToString($1),
                                  JSON.parse(UTF8ToString($2)));
-    }, type, key, json ? json : "{}");
+    }, type_capped, key_capped, json ? json : "{}");
     free(json);
 }
 

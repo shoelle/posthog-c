@@ -38,26 +38,25 @@ extern "C" {
 /* Returns the compiled-in library version, e.g. "0.7.0". */
 const char *ph_version(void);
 
-/* --- Compile-time capacities -----------------------------------------
+/* --- Fixed public capacities -----------------------------------------
  *
- * These bound the SDK's fixed storage so the capture hot path never calls
- * malloc. They are compile-time constants: when the SDK is consumed as
- * source (the intended path - a submodule wrapped by the host's build), the
- * library and caller compile against the same values. Override any of them with
- * -D before including this header if your event shapes need more room.
+ * These values are part of the public ph_prop/ph_props ABI and must match the
+ * compiled library, so they are deliberately not caller-overridable. Fork the
+ * SDK and change both the library and header together if an application needs a
+ * different ABI. Internal queue/blob capacities remain private implementation
+ * details.
  */
-#ifndef PH_MAX_PROPS
+#if defined(PH_MAX_PROPS) || defined(PH_KEY_CAP) || defined(PH_VAL_CAP) || \
+    defined(PH_MAX_DENYLIST) || defined(PH_DISTINCT_ID_CAP) || \
+    defined(PH_EVENT_NAME_CAP)
+#error "posthog-c public capacities are fixed ABI constants; do not override them"
+#endif
 #define PH_MAX_PROPS 24 /* max user properties per event */
-#endif
-#ifndef PH_KEY_CAP
 #define PH_KEY_CAP 48 /* max property-key bytes, incl. NUL */
-#endif
-#ifndef PH_VAL_CAP
 #define PH_VAL_CAP 192 /* max string-value bytes, incl. NUL */
-#endif
-#ifndef PH_MAX_DENYLIST
 #define PH_MAX_DENYLIST 16 /* max property_denylist keys honored (per backend) */
-#endif
+#define PH_DISTINCT_ID_CAP 128 /* max distinct-id bytes, incl. NUL */
+#define PH_EVENT_NAME_CAP 128 /* max event-name bytes, incl. NUL */
 
 /* --- Result codes ----------------------------------------------------- */
 
@@ -260,6 +259,8 @@ typedef struct ph_exception {
  * distinct id, starts the native sender thread. Returns PH_OK on success.
  * Calling when already initialized returns PH_ERR. If cfg->enabled is 0, the
  * SDK initializes into a no-op state and every call below returns quietly.
+ * Over-cap string configuration is rejected with PH_ERR_BADARG rather than
+ * silently truncated.
  */
 ph_result ph_init(const ph_config *cfg);
 
@@ -272,6 +273,7 @@ ph_result ph_init(const ph_config *cfg);
  *
  * Returns the fate of this call's event: PH_OK if accepted into the ring,
  * PH_ERR_DISABLED if the SDK is off, PH_ERR_BADARG for a NULL/empty name, or
+ * PH_ERR_TRUNCATED if an over-cap event name was accepted in truncated form, or
  * PH_ERR_RATE_LIMITED if the token bucket rejected it. Ring saturation still
  * returns PH_OK (your event is accepted; an older one is evicted) and surfaces
  * via ph_dropped_events()/on_stats, not here. Most callers ignore the return.
@@ -281,17 +283,20 @@ ph_result ph_capture(const char *event, const ph_props *props);
 /*
  * Identify the current user (sign-in). Emits $identify, applies set_props as
  * person properties ($set), and switches subsequent events to identified.
- * set_props may be NULL.
+ * set_props may be NULL. The ID is capped to PH_DISTINCT_ID_CAP - 1 bytes.
  */
 void ph_identify(const char *distinct_id, const ph_props *set_props);
 
-/* Merge two ids into one person (emits $create_alias). */
+/* Merge two ids into one person (emits $create_alias). IDs are capped to
+ * PH_DISTINCT_ID_CAP - 1 bytes because this legacy void helper cannot report
+ * PH_ERR_TRUNCATED. */
 void ph_alias(const char *new_id, const char *old_id);
 
 /* Logout: clear identity + super properties, roll a fresh anonymous id. */
 void ph_reset(void);
 
-/* Create/attach a group (emits $groupidentify; scopes later events via $groups). */
+/* Create/attach a group (emits $groupidentify; scopes later events via $groups).
+ * Type/key are capped to PH_KEY_CAP - 1 bytes. */
 void ph_group(const char *type, const char *key, const ph_props *set_props);
 
 /* Register super properties: persisted, merged into every event. */

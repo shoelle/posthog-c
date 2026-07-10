@@ -206,9 +206,10 @@ customer's own integration reference:
    `posthog-c`, maximally embeddable, with zero C++ runtime dependency - plus a
    header-only C++ convenience wrapper. The C calling interface buys FFI and
    the broadest reuse.
-5. **Fixed capacities.** Per-event property caps and the ring size are
-   compile-time constants (overridable with `-D`). Safe because the SDK is
-   consumed as source. The tradeoff: a pathological event with many long strings
+5. **Fixed capacities.** Public per-event property caps are fixed as part of the
+   `ph_props` ABI; internal ring/blob capacities are compile-time constants and
+   may be changed only when the SDK and headers are rebuilt together. The
+   tradeoff: a pathological event with many long strings
    has its overflowing properties dropped (and counted), never a heap allocation.
 6. **Session replay:** out of scope - no DOM/canvas to record from C, and a
    privacy liability. Explicitly excluded.

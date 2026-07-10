@@ -28,7 +28,7 @@ relevant native/WASM verification are green.
   reentrancy: sender-thread `on_log`/`on_stats` callbacks must not deadlock by
   calling `ph_flush(-1)` or `ph_shutdown()`. Apply the same stated contract to
   pthread-enabled WASM builds or narrow it by backend.
-- [ ] **Eliminate compile-time capacity ABI traps.** The public `ph_props` layout
+- [x] **Eliminate compile-time capacity ABI traps.** The public `ph_props` layout
   depends on `PH_MAX_PROPS`/`PH_KEY_CAP`/`PH_VAL_CAP`, but the recommended Zig
   dependency artifact currently has no way to receive matching overrides.
   Either expose dependency build options and a consumer helper that applies the
@@ -73,7 +73,7 @@ relevant native/WASM verification are green.
   and runs `before_send` on the caller thread, ignores the native rate limiter
   and stats, and has different init requirements. Either share full event
   shaping/semantics or narrow the parity and hot-path claims everywhere.
-- [ ] **Reject over-cap identity/config strings instead of silently splitting
+- [x] **Reject over-cap identity/config strings instead of silently splitting
   identity.** In particular, `$identify` currently uses the original long ID
   while later events use the stored 127-byte truncation. Validate API key, host,
   release, offline path, distinct IDs, group keys/types, and event names with

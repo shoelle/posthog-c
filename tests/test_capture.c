@@ -8,6 +8,7 @@
 #include "mock_transport.h"
 #include "test_util.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -56,6 +57,16 @@ static void stats_cb(const char *json, size_t len, void *user) {
     memcpy(g_stats_json, json, n);
     g_stats_json[n] = '\0';
     ph_mutex_unlock(&g_stats_lock);
+}
+
+static int count_text(const char *hay, const char *needle) {
+    int n = 0;
+    size_t len = strlen(needle);
+    while (hay && (hay = strstr(hay, needle)) != NULL) {
+        n++;
+        hay += len;
+    }
+    return n;
 }
 
 void suite_capture(void) {
@@ -166,15 +177,61 @@ void suite_capture(void) {
         ph_shutdown();
     }
 
+    /* --- enabled init rejects missing/malformed/over-cap configuration --- */
+    {
+        ph_config cfg;
+        char long_id[PH_DISTINCT_ID_CAP + 1];
+        memset(long_id, 'x', sizeof(long_id) - 1);
+        long_id[sizeof(long_id) - 1] = '\0';
+
+        ph_config_defaults(&cfg);
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG); /* api_key is required */
+        cfg.api_key = "phc_cfg";
+        cfg.api_host = "ftp://invalid";
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+        cfg.api_host = "https://us.i.posthog.com";
+        cfg.distinct_id = long_id;
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+        cfg.distinct_id = "valid";
+        cfg.property_denylist_count = 1;
+        cfg.property_denylist = NULL;
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+    }
+
     /* --- ph_capture returns the fate of the event --- */
     {
         init_test_sdk();
         CHECK(ph_capture("ok", NULL) == PH_OK);
         CHECK(ph_capture(NULL, NULL) == PH_ERR_BADARG);
         CHECK(ph_capture("", NULL) == PH_ERR_BADARG);
+        {
+            char long_name[PH_EVENT_NAME_CAP + 20];
+            memset(long_name, 'e', sizeof(long_name) - 1);
+            long_name[sizeof(long_name) - 1] = '\0';
+            CHECK(ph_capture(long_name, NULL) == PH_ERR_TRUNCATED);
+        }
         ph_flush(2000);
         ph_shutdown();
         CHECK(ph_capture("after_shutdown", NULL) == PH_ERR_DISABLED); /* SDK off */
+    }
+
+    /* --- identify uses the same capped ID for its event and later captures --- */
+    {
+        char long_id[PH_DISTINCT_ID_CAP + 40];
+        char capped[PH_DISTINCT_ID_CAP];
+        char needle[PH_DISTINCT_ID_CAP + 32];
+        memset(long_id, 'i', sizeof(long_id) - 1);
+        long_id[sizeof(long_id) - 1] = '\0';
+        memset(capped, 'i', sizeof(capped) - 1);
+        capped[sizeof(capped) - 1] = '\0';
+        snprintf(needle, sizeof(needle), "\"distinct_id\":\"%s\"", capped);
+
+        init_test_sdk();
+        ph_identify(long_id, NULL);
+        ph_capture("after_long_identify", NULL);
+        ph_flush(2000);
+        CHECK(count_text(mock_batch(0), needle) == 2);
+        ph_shutdown();
     }
 
     /* --- a rate-limited capture reports PH_ERR_RATE_LIMITED --- */

@@ -60,7 +60,9 @@ behind each piece are in DESIGN.md ("Native delivery pipeline").
   engines built with `-fno-exceptions`.
 - **POD + fixed capacity.** Config and property structs are POD. Per-event
   storage is bounded (`PH_MAX_PROPS`, `PH_KEY_CAP`, `PH_VAL_CAP`,
-  `PH_EVENT_DATA_CAP`), overridable with `-D`. No unbounded growth.
+  `PH_EVENT_DATA_CAP`). Public struct capacities are a fixed ABI; internal
+  capacities may be changed only when the SDK and headers are rebuilt together.
+  No unbounded growth.
 - **One module = one subsystem.** Paired `.h`/`.c`, small and focused. Prefer
   splitting over a catch-all file.
 - **`ph_` public prefix, `ph__` internal.** Public API is `ph_*` in
