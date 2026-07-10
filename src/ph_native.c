@@ -303,10 +303,15 @@ static int scrub_one(ph_event *e, int run_before_send) {
     }
 
     for (i = 0; i < g_ph.denylist_count; i++) ph_props_remove_key(&props, g_ph.denylist[i]);
-    if (run_before_send && g_ph.before_send &&
-        !g_ph.before_send(name, &props, g_ph.user_data)) {
-        atomic_fetch_add(&g_ph.st_before_send_dropped, (uint_least64_t)1);
-        return 0;
+    if (run_before_send && g_ph.before_send) {
+        int keep;
+        ph__in_callback++;
+        keep = g_ph.before_send(name, &props, g_ph.user_data);
+        ph__in_callback--;
+        if (!keep) {
+            atomic_fetch_add(&g_ph.st_before_send_dropped, (uint_least64_t)1);
+            return 0;
+        }
     }
 
     nb = ph_pack_props(&props, tmp, sizeof(tmp));
@@ -587,20 +592,16 @@ static void emit_stats(void) {
         (unsigned long long)retries, (unsigned long long)total,
         (unsigned long long)rl_dropped, (unsigned long long)ring_dropped,
         (unsigned long long)bs);
-    if (len > 0) g_ph.on_stats(buf, (size_t)len, g_ph.user_data);
+    if (len > 0) {
+        ph__in_callback++;
+        g_ph.on_stats(buf, (size_t)len, g_ph.user_data);
+        ph__in_callback--;
+    }
 }
 
 static void sender_main(void *arg) {
-    ph_event *scratch;
+    ph_event *scratch = (ph_event *)arg;
     uint64_t last_stats;
-    (void)arg;
-
-    /* One heap block reused for every batch; sized once at start. */
-    scratch = (ph_event *)malloc((size_t)g_ph.max_batch * sizeof(ph_event));
-    if (!scratch) {
-        ph_log(PH_LOG_ERROR, "sender scratch alloc failed; sender exiting");
-        return;
-    }
     last_stats = ph_now_mono_ns();
 
     for (;;) {
@@ -643,16 +644,21 @@ static void sender_main(void *arg) {
     free(scratch);
 }
 
-void ph__sender_start(void) {
+int ph__sender_start(void) {
+    ph_event *scratch;
     g_ph.stop = 0;
     g_ph.sending = 0;
     ph_ratelimit_init(&g_ph.rl);
-    if (ph_thread_start(&g_ph.sender, sender_main, NULL) == 0) {
+    if ((size_t)g_ph.max_batch > (size_t)-1 / sizeof(ph_event)) return -1;
+    scratch = (ph_event *)malloc((size_t)g_ph.max_batch * sizeof(ph_event));
+    if (!scratch) return -1;
+    if (ph_thread_start(&g_ph.sender, sender_main, scratch) == 0) {
         g_ph.sender_running = 1;
+        return 0;
     } else {
+        free(scratch);
         g_ph.sender_running = 0;
-        ph_log(PH_LOG_ERROR,
-               "failed to start sender thread; events will queue but not send");
+        return -1;
     }
 }
 
@@ -683,6 +689,10 @@ void ph_flush(int timeout_ms) {
     uint64_t deadline_mono = 0;
     uint64_t gen0;
     if (!g_ph.enabled || !g_ph.sender_running) return;
+    if (ph__in_callback) return;
+    /* Callbacks run on the sender. Waiting for the sender from itself would
+     * deadlock; treat callback-initiated flush as a safe no-op. */
+    if (ph_thread_is_current(&g_ph.sender)) return;
 
     if (timeout_ms > 0)
         deadline_mono = ph_now_mono_ns() + (uint64_t)timeout_ms * 1000000ull;

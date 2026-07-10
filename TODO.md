@@ -22,7 +22,7 @@ relevant native/WASM verification are green.
   parse according to JSON rather than the process locale. Cover native and WASM
   under a comma-decimal locale, and tighten the parser to reject malformed
   numbers, raw control characters, unpaired surrogates, and trailing garbage.
-- [ ] **Make the lifecycle contract true.** Either synchronize init/shutdown
+- [x] **Make the lifecycle contract true.** Either synchronize init/shutdown
   against every public call or explicitly require externally serialized
   lifecycle with all callers quiesced. Document and enforce callback
   reentrancy: sender-thread `on_log`/`on_stats` callbacks must not deadlock by
@@ -38,7 +38,7 @@ relevant native/WASM verification are green.
   ID. Either require `distinct_id` consistently or provide an explicit
   persistence/load-save mechanism; make the quickstarts demonstrate stable
   identity and flag assignment.
-- [ ] **Fail initialization when the sender cannot run.** Thread creation and
+- [x] **Fail initialization when the sender cannot run.** Thread creation and
   reusable scratch allocation failures must propagate from `ph_init()` instead
   of leaving an enabled SDK that accepts events but can never deliver them.
   Validate numeric configuration before using it for allocations.

@@ -25,12 +25,16 @@
 #include <string.h>
 
 ph_ctx g_ph;
+_Thread_local int ph__in_callback;
 
 const char *ph_version(void) { return PH_VERSION_STRING; }
 
 /* --- small helpers ---------------------------------------------------- */
 
 static int def_int(int v, int fallback) { return v > 0 ? v : fallback; }
+
+#define PH_CONFIG_MAX_BATCH 10000
+#define PH_CONFIG_MAX_QUEUE 100000
 
 static int string_over_cap(const char *s, size_t cap) {
     return s && strlen(s) >= cap;
@@ -53,6 +57,13 @@ static ph_result validate_config(const ph_config *cfg) {
         string_over_cap(cfg->distinct_id, PH_DISTINCT_ID_CAP))
         return PH_ERR_BADARG;
     if (cfg->person_profiles < PH_IDENTIFIED_ONLY || cfg->person_profiles > PH_NEVER)
+        return PH_ERR_BADARG;
+    if (cfg->flush_at < 0 || cfg->flush_interval_ms < 0 || cfg->max_batch < 0 ||
+        cfg->max_queue < 0 || cfg->request_timeout_ms < 0 || cfg->max_retries < 0 ||
+        cfg->max_batch_bytes < 0 || cfg->stats_interval_ms < 0)
+        return PH_ERR_BADARG;
+    if (def_int(cfg->max_batch, 50) > PH_CONFIG_MAX_BATCH ||
+        def_int(cfg->max_queue, 1000) > PH_CONFIG_MAX_QUEUE)
         return PH_ERR_BADARG;
     if (cfg->property_denylist_count < 0 ||
         cfg->property_denylist_count > PH_MAX_DENYLIST)
@@ -94,7 +105,9 @@ void ph_log(ph_log_level level, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    ph__in_callback++;
     g_ph.on_log(level, buf, g_ph.user_data);
+    ph__in_callback--;
 }
 
 /* --- configuration ---------------------------------------------------- */
@@ -211,7 +224,15 @@ ph_result ph_init(const ph_config *cfg) {
 
     g_ph.transport = ph_http_transport_create();
     g_ph.enabled = 1;
-    ph__sender_start();
+    if (ph__sender_start() != 0) {
+        if (g_ph.transport.destroy) g_ph.transport.destroy(g_ph.transport.self);
+        ph_queue_free(&g_ph.queue);
+        ph_cond_destroy(&g_ph.idle_cond);
+        ph_mutex_destroy(&g_ph.flush_lock);
+        ph_mutex_destroy(&g_ph.lock);
+        memset(&g_ph, 0, sizeof(g_ph));
+        return PH_ERR;
+    }
 
     /* Warn at startup if https is configured but this build has no TLS backend
      * for the platform - otherwise every batch would silently fail. */
@@ -240,6 +261,11 @@ ph_result ph_init(const ph_config *cfg) {
 
 void ph_shutdown(void) {
     if (!g_ph.initialized) return;
+    /* on_log/on_stats execute on the sender thread. A callback cannot tear down
+     * the storage and synchronization primitives beneath its own stack. */
+    if (ph__in_callback ||
+        (g_ph.sender_running && ph_thread_is_current(&g_ph.sender)))
+        return;
     ph_signal_crash_uninstall(); /* idempotent; restores prior fault disposition */
     if (g_ph.enabled) {
         ph__sender_stop_and_join();

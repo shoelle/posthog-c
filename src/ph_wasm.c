@@ -36,6 +36,7 @@ static void *g_user_data = NULL;
 static char g_denylist[PH_MAX_DENYLIST][PH_KEY_CAP];
 static int g_denylist_count = 0;
 static ph_props g_super;
+static _Thread_local int g_in_callback;
 
 const char *ph_version(void) { return PH_VERSION_STRING; }
 
@@ -58,7 +59,13 @@ static int scrub_props(const char *event, const ph_props *in, ph_props *out) {
         for (i = 0; i < in->count; i++) ph_copy_prop_value(out, &in->items[i]);
     }
     apply_denylist(out);
-    if (g_before_send && !g_before_send(event, out, g_user_data)) return 0;
+    if (g_before_send) {
+        int keep;
+        g_in_callback++;
+        keep = g_before_send(event, out, g_user_data);
+        g_in_callback--;
+        if (!keep) return 0;
+    }
     return 1;
 }
 
@@ -251,7 +258,13 @@ void ph_capture_exception(const ph_exception *ex) {
     apply_denylist(&clean);
     if (denylist_has("type")) ph_props_remove_key(&clean, "$exception_type");
     if (denylist_has("message")) ph_props_remove_key(&clean, "$exception_message");
-    if (g_before_send && !g_before_send("$exception", &clean, g_user_data)) return;
+    if (g_before_send) {
+        int keep;
+        g_in_callback++;
+        keep = g_before_send("$exception", &clean, g_user_data);
+        g_in_callback--;
+        if (!keep) return;
+    }
     v = ph_props_find_last_str(&clean, "$exception_type");
     ph_copy_capped(type, sizeof(type), v ? v : "Error");
     v = ph_props_find_last_str(&clean, "$exception_message");
@@ -327,6 +340,10 @@ uint64_t ph_dropped_events(void) { return 0; }
 
 /* No SDK-owned queue or thread to drain - posthog-js manages its lifecycle. */
 void ph_flush(int timeout_ms) { (void)timeout_ms; }
-void ph_shutdown(void) { g_enabled = 0; g_identity_ok = 0; }
+void ph_shutdown(void) {
+    if (g_in_callback) return;
+    g_enabled = 0;
+    g_identity_ok = 0;
+}
 
 #endif /* __EMSCRIPTEN__ */

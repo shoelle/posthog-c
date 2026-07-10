@@ -24,7 +24,7 @@
 
 typedef struct ph_mutex { CRITICAL_SECTION cs; } ph_mutex;
 typedef struct ph_cond { CONDITION_VARIABLE cv; } ph_cond;
-typedef struct ph_thread { HANDLE h; } ph_thread;
+typedef struct ph_thread { HANDLE h; DWORD id; } ph_thread;
 
 #else
 #include <pthread.h>
@@ -54,6 +54,7 @@ typedef void (*ph_thread_fn)(void *arg);
 /* Start `fn(arg)` on a new thread. Returns 0 on success. */
 int ph_thread_start(ph_thread *t, ph_thread_fn fn, void *arg);
 void ph_thread_join(ph_thread *t);
+int ph_thread_is_current(const ph_thread *t);
 
 /* Sleep the calling thread for `ms` milliseconds (no-op if ms <= 0). */
 void ph_sleep_ms(int ms);

@@ -102,8 +102,13 @@ static int prepare_exception_props(const ph_exception *ex, ph_props *p,
     if (denylist_has("type")) ph_props_remove_key(p, "$exception_type");
     if (denylist_has("message")) ph_props_remove_key(p, "$exception_message");
 
-    if (g_ph.before_send && !g_ph.before_send("$exception", p, g_ph.user_data))
-        return 0;
+    if (g_ph.before_send) {
+        int keep;
+        ph__in_callback++;
+        keep = g_ph.before_send("$exception", p, g_ph.user_data);
+        ph__in_callback--;
+        if (!keep) return 0;
+    }
 
     v = ph_props_find_last_str(p, "$exception_type");
     ph_copy_capped(type, type_cap, v ? v : "Error");

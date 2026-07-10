@@ -14,9 +14,11 @@
  * posthog.hpp.
  *
  * Design rationale: see DESIGN.md.
- * Threading: after ph_init(), every public function is safe to call from any
- * thread. On native, capture() copies into a bounded queue and returns; all
- * network I/O happens on a background sender thread.
+ * Threading: after ph_init() returns successfully and before ph_shutdown()
+ * begins, data-plane calls are safe from any thread. The host must serialize
+ * ph_init()/ph_shutdown() and stop/join its callers before shutdown; lifecycle
+ * calls are not concurrent operations. On native, capture() copies into a
+ * bounded queue and returns; all network I/O happens on a background sender.
  */
 #ifndef POSTHOG_H
 #define POSTHOG_H
@@ -147,17 +149,21 @@ ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
  * redacted before $exception_list is built. Mutate `props` in place to redact,
  * or return 0 to drop the event entirely. Return nonzero to keep it. `event`
  * is the event name. `user` is ph_config.user_data. NULL hook = pass-through.
+ * Callbacks must not call ph_flush() or ph_shutdown(); those calls are ignored.
  */
 typedef int (*ph_before_send_fn)(const char *event, ph_props *props, void *user);
 
-/* Optional diagnostics sink for drops/retries/HTTP errors. NULL = silent. */
+/* Optional diagnostics sink for drops/retries/HTTP errors. NULL = silent.
+ * Native callbacks may run on the sender thread. Callback calls to ph_flush()
+ * or ph_shutdown() are safely ignored to prevent reentrant teardown/deadlock. */
 typedef void (*ph_log_fn)(ph_log_level level, const char *msg, void *user);
 
 /* Optional periodic health snapshot. When ph_config.stats_interval_ms > 0, the
  * sender thread calls this every ~stats_interval_ms with a compact JSON blob:
  * queue depth, delivered/failed/retried counts, and drops broken down by reason
  * (rate_limited / queue_overflow / before_send). `json` is valid only for the
- * duration of the call. Fired on the sender thread, never the caller thread. */
+ * duration of the call. Fired on the sender thread, never the caller thread;
+ * it must not call ph_flush() or ph_shutdown(). */
 typedef void (*ph_stats_fn)(const char *json, size_t len, void *user);
 
 /* --- Configuration ----------------------------------------------
@@ -352,7 +358,9 @@ uint64_t ph_dropped_events(void);
  */
 void ph_flush(int timeout_ms);
 
-/* Flush, stop the sender thread, and free all SDK resources. */
+/* Flush, stop the sender thread, and free all SDK resources. The host must first
+ * stop/join every thread that can call the SDK. A sender-thread callback cannot
+ * shut the SDK down; such a call is ignored. */
 void ph_shutdown(void);
 
 #ifdef __cplusplus

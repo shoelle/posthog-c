@@ -59,6 +59,26 @@ static void stats_cb(const char *json, size_t len, void *user) {
     ph_mutex_unlock(&g_stats_lock);
 }
 
+static void reentrant_stats_cb(const char *json, size_t len, void *user) {
+    (void)json;
+    (void)len;
+    (void)user;
+    ph_flush(-1); /* sender-thread calls are guarded no-ops, not deadlocks */
+    ph_shutdown();
+    ph_mutex_lock(&g_stats_lock);
+    g_stats_calls++;
+    ph_mutex_unlock(&g_stats_lock);
+}
+
+static int reentrant_scrub_cb(const char *event, ph_props *props, void *user) {
+    (void)event;
+    (void)props;
+    (void)user;
+    ph_flush(-1);
+    ph_shutdown();
+    return 1;
+}
+
 static int count_text(const char *hay, const char *needle) {
     int n = 0;
     size_t len = strlen(needle);
@@ -195,6 +215,15 @@ void suite_capture(void) {
         cfg.distinct_id = "valid";
         cfg.property_denylist_count = 1;
         cfg.property_denylist = NULL;
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+        cfg.property_denylist_count = 0;
+        cfg.max_batch = 10001;
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+        cfg.max_batch = 50;
+        cfg.max_queue = 100001;
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+        cfg.max_queue = 1000;
+        cfg.max_batch_bytes = -1;
         CHECK(ph_init(&cfg) == PH_ERR_BADARG);
     }
 
@@ -359,5 +388,60 @@ void suite_capture(void) {
                        "\"dropped\":{\"total\":5,\"rate_limited\":5");
         ph_shutdown();
         ph_mutex_destroy(&g_stats_lock);
+    }
+
+    /* --- sender-thread callbacks cannot self-deadlock lifecycle/draining --- */
+    {
+        ph_config cfg;
+        int calls;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_stats_reentrant";
+        cfg.distinct_id = "anon-stats-reentrant";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 20;
+        cfg.preload_flags = 0;
+        cfg.stats_interval_ms = 10;
+        cfg.on_stats = reentrant_stats_cb;
+        ph_mutex_init(&g_stats_lock);
+        ph_mutex_lock(&g_stats_lock);
+        g_stats_calls = 0;
+        ph_mutex_unlock(&g_stats_lock);
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        ph_capture("callback_guard", NULL);
+        sleep_ms(100);
+        ph_mutex_lock(&g_stats_lock);
+        calls = g_stats_calls;
+        ph_mutex_unlock(&g_stats_lock);
+        CHECK(calls > 0);
+        CHECK(ph_capture("still_running", NULL) == PH_OK);
+        ph_shutdown();
+        ph_mutex_destroy(&g_stats_lock);
+    }
+
+    /* --- caller-thread exception scrubbers cannot tear down their own call --- */
+    {
+        ph_config cfg;
+        ph_exception ex;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_scrub_reentrant";
+        cfg.distinct_id = "anon-scrub-reentrant";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.before_send = reentrant_scrub_cb;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        memset(&ex, 0, sizeof(ex));
+        ex.type = "Guarded";
+        ex.message = "still alive";
+        ex.handled = 1;
+        ph_capture_exception(&ex);
+        CHECK(ph_capture("after_reentrant_scrub", NULL) == PH_OK);
+        ph_flush(2000);
+        CHECK_CONTAINS(mock_batch(0), "after_reentrant_scrub");
+        ph_shutdown();
     }
 }

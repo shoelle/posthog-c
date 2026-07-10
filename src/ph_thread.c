@@ -41,7 +41,7 @@ int ph_thread_start(ph_thread *t, ph_thread_fn fn, void *arg) {
     if (!ctx) return -1;
     ctx->fn = fn;
     ctx->arg = arg;
-    t->h = CreateThread(NULL, 0, ph_thread_trampoline, ctx, 0, NULL);
+    t->h = CreateThread(NULL, 0, ph_thread_trampoline, ctx, 0, &t->id);
     if (!t->h) {
         free(ctx);
         return -1;
@@ -54,6 +54,11 @@ void ph_thread_join(ph_thread *t) {
     WaitForSingleObject(t->h, INFINITE);
     CloseHandle(t->h);
     t->h = NULL;
+    t->id = 0;
+}
+
+int ph_thread_is_current(const ph_thread *t) {
+    return t->h && t->id == GetCurrentThreadId();
 }
 
 void ph_sleep_ms(int ms) {
@@ -123,6 +128,10 @@ void ph_thread_join(ph_thread *t) {
     if (!t->started) return;
     pthread_join(t->t, NULL);
     t->started = 0;
+}
+
+int ph_thread_is_current(const ph_thread *t) {
+    return t->started && pthread_equal(t->t, pthread_self());
 }
 
 void ph_sleep_ms(int ms) {

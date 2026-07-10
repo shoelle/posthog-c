@@ -221,6 +221,7 @@ typedef struct ph_ctx {
 
 /* The one process-global instance (global singleton). */
 extern ph_ctx g_ph;
+extern _Thread_local int ph__in_callback;
 
 /* --- Internal helpers shared across .c files -------------------------- */
 
@@ -284,7 +285,7 @@ void ph_log(ph_log_level level, const char *fmt, ...);
 void ph__set_transport(const ph_transport *t);
 
 /* Native backend entry points (ph_native.c) used by ph_core.c. */
-void ph__sender_start(void);
+int ph__sender_start(void);
 void ph__sender_stop_and_join(void);
 void ph__sender_wake(void);
 
