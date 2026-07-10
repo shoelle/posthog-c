@@ -405,15 +405,36 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     return r == PH_OK && truncated ? PH_ERR_TRUNCATED : r;
 }
 
+/* Scrub caller-supplied person/group properties (identify $set, group
+ * $group_set) the same way their control event is scrubbed, so a denylisted or
+ * before_send-redacted value never reaches the /flags/ request body. The event
+ * copy is scrubbed independently on the sender thread, so the hook may run once
+ * here and once there - it must be side-effect-free per the documented contract.
+ * Runs with g_ph.lock released: before_send may re-enter public APIs. Returns 0
+ * if the hook vetoed the set (store nothing) or 1 to store the scrubbed props. */
+static int scrub_context_props(ph_props *p, const char *event) {
+    int keep = 1;
+    ph_apply_denylist(p, g_ph.denylist, g_ph.denylist_count);
+    if (g_ph.before_send) {
+        ph__in_callback++;
+        keep = g_ph.before_send(event, p, g_ph.user_data);
+        ph__in_callback--;
+    }
+    return keep;
+}
+
 void ph_identify(const char *distinct_id, const ph_props *set_props) {
+    ph_props person;
     if (!g_ph.enabled || !distinct_id || !distinct_id[0]) return;
+    ph_props_init(&person);
+    if (set_props) {
+        person = *set_props;
+        if (!scrub_context_props(&person, "$identify")) ph_props_init(&person);
+    }
     ph_mutex_lock(&g_ph.lock);
     ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, distinct_id);
     g_ph.identified = 1;
-    if (set_props)
-        g_ph.flag_person_props = *set_props;
-    else
-        ph_props_init(&g_ph.flag_person_props);
+    g_ph.flag_person_props = person;
     flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
     /* $identify builds a profile regardless of policy (profile_mode = 0). */
@@ -463,6 +484,7 @@ void ph_reset(void) {
 
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_props p;
+    ph_props gprops;
     char did[PH_KEY_CAP * 2 + 4];
     char type_capped[PH_KEY_CAP];
     char key_capped[PH_KEY_CAP];
@@ -470,6 +492,13 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     if (!g_ph.enabled || !type || !type[0] || !key || !key[0]) return;
     ph_copy_capped(type_capped, sizeof(type_capped), type);
     ph_copy_capped(key_capped, sizeof(key_capped), key);
+
+    /* Scrub $group_set before it is stored for the /flags/ group_properties. */
+    ph_props_init(&gprops);
+    if (set_props) {
+        gprops = *set_props;
+        if (!scrub_context_props(&gprops, "$groupidentify")) ph_props_init(&gprops);
+    }
 
     /* Remember the membership so later events carry $groups. */
     ph_mutex_lock(&g_ph.lock);
@@ -480,10 +509,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
              * invalidate even when the membership key itself is unchanged. */
             context_changed = 1;
             ph_copy_capped(g_ph.group_keys[i], PH_KEY_CAP, key_capped);
-            if (set_props)
-                g_ph.group_props[i] = *set_props;
-            else
-                ph_props_init(&g_ph.group_props[i]);
+            g_ph.group_props[i] = gprops;
             found = 1;
             break;
         }
@@ -491,10 +517,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     if (!found && g_ph.group_count < PH_MAX_GROUPS) {
         ph_copy_capped(g_ph.group_types[g_ph.group_count], PH_KEY_CAP, type_capped);
         ph_copy_capped(g_ph.group_keys[g_ph.group_count], PH_KEY_CAP, key_capped);
-        if (set_props)
-            g_ph.group_props[g_ph.group_count] = *set_props;
-        else
-            ph_props_init(&g_ph.group_props[g_ph.group_count]);
+        g_ph.group_props[g_ph.group_count] = gprops;
         g_ph.group_count++;
         context_changed = 1;
     }

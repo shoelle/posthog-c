@@ -149,6 +149,41 @@ void suite_scrub(void) {
         ph_shutdown();
     }
 
+    /* --- identify/group props are also scrubbed on the /flags/ request body,
+     *     not just the $identify/$groupidentify events. Regression: person_/
+     *     group_properties used to be serialized raw, leaking denylisted and
+     *     before_send-redacted values to /flags/ on every refetch. --- */
+    {
+        ph_config cfg;
+        ph_props identify, group;
+        static const char *deny[] = {"secret", "token"};
+        base_cfg(&cfg);
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 2;
+        cfg.before_send = redact; /* also strips "password" and adds "scrubbed" */
+        start(&cfg);
+
+        ph_props_init(&identify);
+        ph_props_set_str(&identify, "secret", "identify-pii");   /* denylist */
+        ph_props_set_str(&identify, "password", "hunter2");      /* before_send */
+        ph_props_set_str(&identify, "plan", "pro");              /* kept */
+        ph_identify("privacy-user", &identify);
+
+        ph_props_init(&group);
+        ph_props_set_str(&group, "token", "group-pii");          /* denylist */
+        ph_props_set_int(&group, "seats", 12);                   /* kept */
+        ph_group("company", "privacy-co", &group);
+
+        mock_set_flags_response("{\"flags\":{}}");
+        ph_reload_feature_flags();
+        CHECK_NOT_CONTAINS(mock_last_fetch_body(), "identify-pii");
+        CHECK_NOT_CONTAINS(mock_last_fetch_body(), "hunter2");
+        CHECK_NOT_CONTAINS(mock_last_fetch_body(), "group-pii");
+        CHECK_CONTAINS(mock_last_fetch_body(), "\"plan\":\"pro\"");
+        CHECK_CONTAINS(mock_last_fetch_body(), "\"seats\":12");
+        ph_shutdown();
+    }
+
     /* --- privacy does not let super props crowd out explicit event props --- */
     {
         ph_config cfg;
