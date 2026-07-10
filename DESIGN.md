@@ -137,10 +137,12 @@ customer's own integration reference:
   delivery dedups instead of double-counting. To honor the heap/clock-free
   capture path, `ph_capture` records only a suspend-aware monotonic tick
   (`GetTickCount64`, Linux `CLOCK_BOOTTIME`, or macOS `mach_continuous_time`).
-  The sender reconstructs wall time from the init epoch and recalibrates that
-  mapping when NTP or a manual clock change exceeds one second. A long-queued
-  event therefore retains its capture time without reading wall time on the
-  caller thread.
+  The sender reconstructs wall time from the init epoch, recalibrating that
+  mapping only during a short grace window after init (so a wrong-at-boot clock
+  that NTP fixes at startup is still corrected). After the window the epoch is
+  frozen, so a later NTP or manual clock step never rewrites the timestamps of
+  already-captured events. A long-queued event therefore retains its capture
+  time without reading wall time on the caller thread.
 - **Auto-properties** (`$lib`, `$lib_version`, `$lib_backend` = native/wasm,
   `$os`, `arch`, `release`) are stamped by the serializer, so dashboards slice
   by version and platform with zero caller effort. This fixed set is posthog-c's
