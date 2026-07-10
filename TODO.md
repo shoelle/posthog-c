@@ -56,7 +56,7 @@ relevant native/WASM verification are green.
   `before_send` on both backends. Preserve explicit event properties when the
   combined super/event set exceeds `PH_MAX_PROPS`; enabling privacy must not
   silently change otherwise-valid event contents.
-- [ ] **Bound and correctly frame `/flags/` HTTP responses.** Do not accumulate
+- [x] **Bound and correctly frame `/flags/` HTTP responses.** Do not accumulate
   an unbounded network body before copying to `PH_FLAGS_RESP_CAP`; stream within
   the caller's cap, decode chunked transfer encoding, honor Content-Length, and
   distinguish an oversized/truncated response from valid JSON.
@@ -64,7 +64,7 @@ relevant native/WASM verification are green.
   and receive must share one deadline so `ph_flush()`/`ph_shutdown()` cannot
   stall past the documented request timeout. Make shutdown interrupt in-flight
   retry/backoff and document any resolver limitation that cannot be cancelled.
-- [ ] **Identify native flag requests as a PostHog SDK runtime.** Send an
+- [x] **Identify native flag requests as a PostHog SDK runtime.** Send an
   appropriate `User-Agent`/SDK header so PostHog runtime filtering does not
   classify posthog-c as unknown and omit native/server-scoped flags.
 - [ ] **Resolve native/WASM semantic parity honestly.** Today only scalar

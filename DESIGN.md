@@ -82,6 +82,12 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
   ([`ph_transport`](src/ph_internal.h)). The default is plaintext HTTP; tests
   swap in a capturing mock. TLS (v0.2) slotted in as a second transport, not a
   rewrite.
+- **Bounded HTTP responses.** Native requests identify themselves as
+  `posthog-c/<version>`. The plaintext `/flags/` reader caps both headers and
+  encoded-body overhead, enforces `Content-Length`, decodes chunked transfer
+  coding, and rejects incomplete or oversized responses. WinHTTP performs the
+  HTTPS framing and the SDK rejects a decoded body that exceeds the caller's
+  fixed response buffer.
 
 ## 3. Identity, baked at capture
 

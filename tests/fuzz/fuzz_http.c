@@ -11,9 +11,12 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     ph_send_meta meta;
+    char body[PH_RESP_BODY_CAP];
     memset(&meta, 0, sizeof meta);
     (void)ph__http_parse_response_meta((const char *)data, size, &meta);
     (void)ph__http_send_response_complete((const char *)data, size);
+    (void)ph__http_decode_response_body((const char *)data, size,
+                                        body, sizeof body);
     return 0;
 }
 

@@ -16,6 +16,7 @@ static void test_request_builder(void) {
     CHECK_CONTAINS(out.data, "POST /ingest/batch/ HTTP/1.1\r\n");
     CHECK_CONTAINS(out.data, "Host: localhost:8000\r\n");
     CHECK_CONTAINS(out.data, "Content-Type: application/json\r\n");
+    CHECK_CONTAINS(out.data, "User-Agent: posthog-c/" PH_VERSION_STRING "\r\n");
     CHECK_CONTAINS(out.data, "Content-Length: 7\r\n");
     CHECK_CONTAINS(out.data, "\r\n\r\n{\"x\":1}");
     CHECK_NOT_CONTAINS(out.data, "Content-Encoding"); /* none when NULL */
@@ -49,6 +50,41 @@ static void test_request_builder(void) {
     r = ph_http_build_request("ftp://nope/", body, strlen(body), NULL, &out);
     CHECK(r == PH_ERR);
     ph_strbuf_free(&out);
+}
+
+static void test_fetch_response_body(void) {
+    char out[32];
+    const char *length =
+        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"x\":1}";
+    const char *length_short =
+        "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"x\":1}";
+    const char *length_large =
+        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n1234567";
+    const char *chunked =
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "3\r\n{\"x\r\n4;ext=yes\r\n\":1}\r\n0\r\nX-Test: yes\r\n\r\n";
+    const char *chunked_short =
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "7\r\n{\"x\":1}\r\n";
+    const char *close_delimited =
+        "HTTP/1.0 200 OK\r\n\r\n{\"x\":1}";
+
+    CHECK(ph__http_decode_response_body(length, strlen(length), out,
+                                        sizeof out) == 200);
+    CHECK(strcmp(out, "{\"x\":1}") == 0);
+    CHECK(ph__http_decode_response_body(chunked, strlen(chunked), out,
+                                        sizeof out) == 200);
+    CHECK(strcmp(out, "{\"x\":1}") == 0);
+    CHECK(ph__http_decode_response_body(close_delimited,
+                                        strlen(close_delimited), out,
+                                        sizeof out) == 200);
+    CHECK(strcmp(out, "{\"x\":1}") == 0);
+    CHECK(ph__http_decode_response_body(length_short, strlen(length_short), out,
+                                        sizeof out) == PH_HTTP_RESPONSE_TRUNCATED);
+    CHECK(ph__http_decode_response_body(chunked_short, strlen(chunked_short), out,
+                                        sizeof out) == PH_HTTP_RESPONSE_TRUNCATED);
+    CHECK(ph__http_decode_response_body(length_large, strlen(length_large), out,
+                                        7) == PH_HTTP_RESPONSE_TOO_LARGE);
 }
 
 static void test_send_response_meta(void) {
@@ -103,4 +139,5 @@ static void test_send_response_meta(void) {
 void suite_http(void) {
     test_request_builder();
     test_send_response_meta();
+    test_fetch_response_body();
 }

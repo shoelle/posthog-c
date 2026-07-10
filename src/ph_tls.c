@@ -1,4 +1,5 @@
 #include "ph_tls.h"
+#include "posthog.h"
 
 #if defined(_WIN32)
 
@@ -23,6 +24,7 @@ static int do_tls(const char *host, int port, const char *path, const char *body
                   size_t retry_after_cap) {
     wchar_t whost[256];
     wchar_t wpath[1024];
+    wchar_t wagent[64];
     HINTERNET ses = NULL, con = NULL, req = NULL;
     DWORD status = 0;
     DWORD sz = sizeof(status);
@@ -32,8 +34,9 @@ static int do_tls(const char *host, int port, const char *path, const char *body
     if (retry_after && retry_after_cap) retry_after[0] = '\0';
     if (!to_wide(host, whost, 256)) return -1;
     if (!to_wide((path && path[0]) ? path : "/", wpath, 1024)) return -1;
+    if (!to_wide("posthog-c/" PH_VERSION_STRING, wagent, 64)) return -1;
 
-    ses = WinHttpOpen(L"posthog-c", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    ses = WinHttpOpen(wagent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!ses) goto done;
     if (timeout_ms > 0)
@@ -83,12 +86,23 @@ static int do_tls(const char *host, int port, const char *path, const char *body
     if (out && out_cap > 1) {
         DWORD total = 0, avail = 0, got = 0;
         for (;;) {
-            if (!WinHttpQueryDataAvailable(req, &avail) || avail == 0) break;
+            if (!WinHttpQueryDataAvailable(req, &avail)) {
+                rc = -1;
+                break;
+            }
+            if (avail == 0) break;
             {
                 DWORD room = (DWORD)(out_cap - 1 - total);
-                DWORD toread = avail < room ? avail : room;
-                if (toread == 0) break; /* buffer full */
-                if (!WinHttpReadData(req, out + total, toread, &got) || got == 0) break;
+                DWORD toread;
+                if (avail > room) {
+                    rc = -2; /* PH_HTTP_RESPONSE_TOO_LARGE */
+                    break;
+                }
+                toread = avail;
+                if (!WinHttpReadData(req, out + total, toread, &got) || got == 0) {
+                    rc = -1;
+                    break;
+                }
                 total += got;
             }
         }

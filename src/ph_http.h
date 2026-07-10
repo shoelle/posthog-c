@@ -34,4 +34,13 @@ int ph__http_parse_response_meta(const char *resp, size_t resp_len,
  * waiting for connection close. */
 int ph__http_send_response_complete(const char *resp, size_t resp_len);
 
+/* Decode a complete HTTP response into a bounded body buffer. Chunked transfer
+ * coding is removed and Content-Length is enforced. Returns the HTTP status,
+ * PH_HTTP_RESPONSE_TRUNCATED for malformed/incomplete framing, or
+ * PH_HTTP_RESPONSE_TOO_LARGE when the decoded body does not fit. */
+#define PH_HTTP_RESPONSE_TRUNCATED (-1)
+#define PH_HTTP_RESPONSE_TOO_LARGE (-2)
+int ph__http_decode_response_body(const char *resp, size_t resp_len,
+                                  char *out, size_t out_cap);
+
 #endif /* PH_HTTP_H */

@@ -1,8 +1,10 @@
 #include "ph_http.h"
 #include "ph_gzip.h"
 #include "ph_tls.h"
+#include "ph_time.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,8 @@
 typedef SOCKET ph_socket;
 #define PH_INVALID_SOCK INVALID_SOCKET
 #else
+#include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -100,6 +104,7 @@ ph_result ph_http_build_request(const char *url, const char *body,
         snprintf(line, sizeof(line), "Host: %s:%s\r\n", u.host, u.port);
     ph_strbuf_append_cstr(out, line);
     ph_strbuf_append_cstr(out, "Content-Type: application/json\r\n");
+    ph_strbuf_append_cstr(out, "User-Agent: posthog-c/" PH_VERSION_STRING "\r\n");
     if (content_encoding && content_encoding[0]) {
         snprintf(line, sizeof(line), "Content-Encoding: %s\r\n", content_encoding);
         ph_strbuf_append_cstr(out, line);
@@ -147,13 +152,99 @@ static void set_timeouts(ph_socket s, int timeout_ms) {
 #endif
 }
 
+static uint64_t request_deadline(int timeout_ms) {
+    uint64_t now;
+    uint64_t add;
+    if (timeout_ms <= 0) return 0;
+    now = ph_now_mono_ns();
+    add = (uint64_t)timeout_ms * 1000000ull;
+    return UINT64_MAX - now < add ? UINT64_MAX : now + add;
+}
+
+static int remaining_ms(uint64_t deadline) {
+    uint64_t now, left, ms;
+    if (deadline == 0) return -1;
+    now = ph_now_mono_ns();
+    if (now >= deadline) return 0;
+    left = deadline - now;
+    ms = (left + 999999ull) / 1000000ull;
+    return ms > (uint64_t)INT_MAX ? INT_MAX : (int)ms;
+}
+
+static int set_nonblocking(ph_socket s, int enabled) {
+#if defined(_WIN32)
+    u_long mode = enabled ? 1ul : 0ul;
+    return ioctlsocket(s, FIONBIO, &mode) == 0;
+#else
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags < 0) return 0;
+    if (enabled) flags |= O_NONBLOCK;
+    else flags &= ~O_NONBLOCK;
+    return fcntl(s, F_SETFL, flags) == 0;
+#endif
+}
+
+static int connect_pending(void) {
+#if defined(_WIN32)
+    int e = WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+#else
+    return errno == EINPROGRESS || errno == EWOULDBLOCK;
+#endif
+}
+
+static int connect_until(ph_socket s, const struct sockaddr *addr, int addrlen,
+                         uint64_t deadline) {
+    fd_set writefds, exceptfds;
+    struct timeval tv;
+    struct timeval *tvp = NULL;
+    int ms, rc, error = 0;
+    socklen_t error_len = (socklen_t)sizeof(error);
+
+    if (!deadline) return connect(s, addr, addrlen) == 0;
+    if (!set_nonblocking(s, 1)) return 0;
+    rc = connect(s, addr, addrlen);
+    if (rc == 0) {
+        set_nonblocking(s, 0);
+        return 1;
+    }
+    if (!connect_pending()) {
+        set_nonblocking(s, 0);
+        return 0;
+    }
+    ms = remaining_ms(deadline);
+    if (ms <= 0) {
+        set_nonblocking(s, 0);
+        return 0;
+    }
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    tvp = &tv;
+    FD_ZERO(&writefds);
+    FD_ZERO(&exceptfds);
+    FD_SET(s, &writefds);
+    FD_SET(s, &exceptfds);
+    rc = select((int)s + 1, NULL, &writefds, &exceptfds, tvp);
+    if (rc > 0 && FD_ISSET(s, &writefds) &&
+        getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&error, &error_len) == 0 &&
+        error == 0) {
+        set_nonblocking(s, 0);
+        return 1;
+    }
+    set_nonblocking(s, 0);
+    return 0;
+}
+
 /* Parse "HTTP/1.1 200 OK" -> 200. Returns -1 if unrecognized. */
 static int parse_status(const char *resp, size_t n) {
     size_t i = 0;
     while (i < n && resp[i] != ' ') i++; /* skip "HTTP/1.1" */
     while (i < n && resp[i] == ' ') i++;
     if (i + 3 > n) return -1;
-    if (resp[i] < '0' || resp[i] > '9') return -1;
+    if (resp[i] < '0' || resp[i] > '9' ||
+        resp[i + 1] < '0' || resp[i + 1] > '9' ||
+        resp[i + 2] < '0' || resp[i + 2] > '9')
+        return -1;
     return (resp[i] - '0') * 100 + (resp[i + 1] - '0') * 10 + (resp[i + 2] - '0');
 }
 
@@ -349,6 +440,100 @@ static void copy_body_prefix(const char *body, size_t body_len, int chunked,
     }
 }
 
+/* Strict full-body chunk decoder. Return 1 when the zero chunk and trailers are
+ * complete, 0 when more bytes are needed, -1 for malformed framing, and -2
+ * when the decoded bytes do not fit. `out == NULL` performs framing only. */
+static int decode_chunked_full(const char *body, size_t body_len,
+                               char *out, size_t out_cap, size_t *out_len) {
+    size_t pos = 0, copied = 0;
+    if (out && out_cap) out[0] = '\0';
+    if (out_len) *out_len = 0;
+
+    for (;;) {
+        size_t chunk_len = 0;
+        int digits = 0;
+        while (pos < body_len) {
+            int hv = hex_value(body[pos]);
+            if (hv < 0) break;
+            if (chunk_len > ((size_t)-1 - (size_t)hv) / 16) return -1;
+            chunk_len = chunk_len * 16 + (size_t)hv;
+            digits = 1;
+            pos++;
+        }
+        if (!digits) return pos == body_len ? 0 : -1;
+        /* Chunk extensions are permitted but the size line must end in CRLF. */
+        while (pos < body_len && body[pos] != '\r' && body[pos] != '\n') pos++;
+        if (pos + 1 >= body_len) return 0;
+        if (body[pos] != '\r' || body[pos + 1] != '\n') return -1;
+        pos += 2;
+
+        if (chunk_len == 0) {
+            /* Consume optional trailer fields through their terminating blank
+             * line. We do not expose trailer values. */
+            for (;;) {
+                size_t line = pos;
+                while (pos < body_len && body[pos] != '\r' && body[pos] != '\n') pos++;
+                if (pos + 1 >= body_len) return 0;
+                if (body[pos] != '\r' || body[pos + 1] != '\n') return -1;
+                pos += 2;
+                if (pos == line + 2) {
+                    if (out && out_cap) out[copied] = '\0';
+                    if (out_len) *out_len = copied;
+                    return 1;
+                }
+            }
+        }
+
+        if (chunk_len > body_len - pos) return 0;
+        if (chunk_len > (size_t)-1 - copied) return -1;
+        if (out && (out_cap == 0 || copied >= out_cap ||
+                    chunk_len >= out_cap - copied))
+            return -2;
+        if (out && chunk_len) memcpy(out + copied, body + pos, chunk_len);
+        copied += chunk_len;
+        pos += chunk_len;
+        if (pos + 1 >= body_len) return 0;
+        if (body[pos] != '\r' || body[pos + 1] != '\n') return -1;
+        pos += 2;
+    }
+}
+
+int ph__http_decode_response_body(const char *resp, size_t resp_len,
+                                  char *out, size_t out_cap) {
+    const char *sep;
+    const char *body;
+    size_t head_len, body_len;
+    long content_len;
+    int status, chunk_rc;
+
+    if (out && out_cap) out[0] = '\0';
+    if (!resp) return PH_HTTP_RESPONSE_TRUNCATED;
+    sep = find_header_end(resp, resp_len);
+    if (!sep) return PH_HTTP_RESPONSE_TRUNCATED;
+    status = parse_status(resp, (size_t)(sep - resp));
+    if (status < 0) return PH_HTTP_RESPONSE_TRUNCATED;
+    head_len = (size_t)(sep - resp);
+    body = sep + 4;
+    body_len = resp_len - (size_t)(body - resp);
+
+    if (scan_transfer_chunked(resp, head_len)) {
+        chunk_rc = decode_chunked_full(body, body_len, out, out_cap, NULL);
+        if (chunk_rc == -2) return PH_HTTP_RESPONSE_TOO_LARGE;
+        return chunk_rc == 1 ? status : PH_HTTP_RESPONSE_TRUNCATED;
+    }
+
+    content_len = scan_content_length(resp, head_len);
+    if (content_len >= 0) {
+        if ((size_t)content_len > body_len) return PH_HTTP_RESPONSE_TRUNCATED;
+        body_len = (size_t)content_len;
+    }
+    if (body_len > 0 && (!out || out_cap == 0 || body_len >= out_cap))
+        return PH_HTTP_RESPONSE_TOO_LARGE;
+    if (body_len) memcpy(out, body, body_len);
+    if (out && out_cap) out[body_len] = '\0';
+    return status;
+}
+
 int ph__http_parse_response_meta(const char *resp, size_t resp_len,
                                  ph_send_meta *meta) {
     const char *sep = find_header_end(resp, resp_len);
@@ -402,15 +587,22 @@ int ph__http_send_response_complete(const char *resp, size_t resp_len) {
  * headers, and the small quota-notice prefix; the body path reads in chunks. */
 #define PH_HTTP_STATUS_BUF 4096
 #define PH_HTTP_FETCH_CHUNK 2048
+#define PH_HTTP_HEADER_CAP 16384
+#define PH_HTTP_CHUNK_OVERHEAD_CAP 16384
 
 /* Read a small status-only response: status line + headers (Retry-After) + the
  * body prefix carrying a quota notice. Stops at Content-Length, a complete
  * chunked body, or the buffer cap. Returns the HTTP status, or -1. */
-static int read_status_response(ph_socket s, ph_send_meta *meta) {
+static int read_status_response(ph_socket s, ph_send_meta *meta,
+                                uint64_t deadline) {
     char resp[PH_HTTP_STATUS_BUF];
     size_t total = 0;
     for (;;) {
-        int n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
+        int ms = remaining_ms(deadline);
+        int n;
+        if (deadline && ms <= 0) return -1;
+        if (ms > 0) set_timeouts(s, ms);
+        n = (int)recv(s, resp + total, (int)(sizeof(resp) - 1 - total), 0);
         if (n <= 0) break;
         total += (size_t)n;
         resp[total] = '\0';
@@ -423,30 +615,72 @@ static int read_status_response(ph_socket s, ph_send_meta *meta) {
 /* Read the whole response, parse the status, and copy the body (past the
  * "\r\n\r\n" terminator) into out (NUL-terminated, capped) - used for /flags/.
  * Returns the HTTP status, or -1. */
-static int read_body_response(ph_socket s, char *out, size_t out_cap) {
-    ph_strbuf resp;
-    int status = -1;
-    ph_strbuf_init(&resp);
+static int read_body_response(ph_socket s, char *out, size_t out_cap,
+                              uint64_t deadline) {
+    char *resp;
+    size_t total = 0, raw_cap;
+    int closed = 0, framed = 0;
+    int result = PH_HTTP_RESPONSE_TRUNCATED;
+
+    if (out_cap > (size_t)-1 - PH_HTTP_HEADER_CAP - PH_HTTP_CHUNK_OVERHEAD_CAP)
+        return PH_HTTP_RESPONSE_TOO_LARGE;
+    raw_cap = out_cap + PH_HTTP_HEADER_CAP + PH_HTTP_CHUNK_OVERHEAD_CAP;
+    resp = (char *)malloc(raw_cap + 1);
+    if (!resp) return -1;
     for (;;) {
-        char chunk[PH_HTTP_FETCH_CHUNK];
-        int n = (int)recv(s, chunk, (int)sizeof(chunk), 0);
-        if (n <= 0) break;
-        ph_strbuf_append(&resp, chunk, (size_t)n);
-        if (resp.oom) break;
-    }
-    if (resp.data) {
-        const char *sep = strstr(resp.data, "\r\n\r\n");
-        status = parse_status(resp.data, resp.len);
-        if (sep && out_cap > 0) {
-            const char *b = sep + 4;
-            size_t blen = resp.len - (size_t)(b - resp.data);
-            size_t copy = blen < out_cap - 1 ? blen : out_cap - 1;
-            memcpy(out, b, copy);
-            out[copy] = '\0';
+        const char *sep;
+        size_t room = raw_cap - total;
+        int ms = remaining_ms(deadline);
+        int n;
+        if (deadline && ms <= 0) break;
+        if (room == 0) {
+            result = PH_HTTP_RESPONSE_TOO_LARGE;
+            goto done;
+        }
+        if (ms > 0) set_timeouts(s, ms);
+        if (room > PH_HTTP_FETCH_CHUNK) room = PH_HTTP_FETCH_CHUNK;
+        n = (int)recv(s, resp + total, (int)room, 0);
+        if (n == 0) {
+            closed = 1;
+            break;
+        }
+        if (n < 0) break;
+        total += (size_t)n;
+        resp[total] = '\0';
+        sep = find_header_end(resp, total);
+        if (!sep) {
+            if (total >= PH_HTTP_HEADER_CAP) break;
+        } else {
+            size_t head_len = (size_t)(sep - resp);
+            size_t body_have = total - (size_t)((sep + 4) - resp);
+            long content_len;
+            if (head_len > PH_HTTP_HEADER_CAP) break;
+            if (scan_transfer_chunked(resp, head_len)) {
+                int chunk_rc = decode_chunked_full(sep + 4, body_have,
+                                                   NULL, 0, NULL);
+                framed = 1;
+                if (chunk_rc == 1) break;
+                if (chunk_rc < 0) goto done;
+            } else {
+                content_len = scan_content_length(resp, head_len);
+                if (content_len >= 0) {
+                    framed = 1;
+                    if ((size_t)content_len >= out_cap) {
+                        result = PH_HTTP_RESPONSE_TOO_LARGE;
+                        goto done;
+                    }
+                    if (body_have >= (size_t)content_len) break;
+                }
+            }
         }
     }
-    ph_strbuf_free(&resp);
-    return status;
+    /* Close-delimited bodies are complete only at EOF; Content-Length and
+     * chunked bodies can complete without waiting for the peer to close. */
+    if (closed || framed)
+        result = ph__http_decode_response_body(resp, total, out, out_cap);
+done:
+    free(resp);
+    return result;
 }
 
 /* Core native HTTP. If `out` is non-NULL the response *body* (after the header
@@ -462,6 +696,7 @@ static int do_http(const char *url, const char *body, size_t body_len,
     ph_socket s = PH_INVALID_SOCK;
     int status = -1;
     size_t sent = 0;
+    uint64_t deadline = request_deadline(timeout_ms);
 
     if (out && out_cap) out[0] = '\0';
     if (parse_url(url, &u) != PH_OK) return -1;
@@ -493,11 +728,19 @@ static int do_http(const char *url, const char *body, size_t body_len,
         ph_strbuf_free(&req);
         return -1;
     }
+    /* getaddrinfo is synchronous on the supported libc/Winsock APIs. Its time
+     * counts against the deadline, but cannot be interrupted portably. */
+    if (deadline && remaining_ms(deadline) <= 0) {
+        freeaddrinfo(res);
+        ph_strbuf_free(&req);
+        return -1;
+    }
     for (ai = res; ai; ai = ai->ai_next) {
+        int ms = remaining_ms(deadline);
+        if (deadline && ms <= 0) break;
         s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (s == PH_INVALID_SOCK) continue;
-        set_timeouts(s, timeout_ms);
-        if (connect(s, ai->ai_addr, (int)ai->ai_addrlen) == 0) break;
+        if (connect_until(s, ai->ai_addr, (int)ai->ai_addrlen, deadline)) break;
         sock_close(s);
         s = PH_INVALID_SOCK;
     }
@@ -507,6 +750,13 @@ static int do_http(const char *url, const char *body, size_t body_len,
         return -1;
     }
     while (sent < req.len) {
+        int ms = remaining_ms(deadline);
+        if (deadline && ms <= 0) {
+            sock_close(s);
+            ph_strbuf_free(&req);
+            return -1;
+        }
+        if (ms > 0) set_timeouts(s, ms);
         int n = (int)send(s, req.data + sent, (int)(req.len - sent), 0);
         if (n <= 0) {
             sock_close(s);
@@ -516,8 +766,8 @@ static int do_http(const char *url, const char *body, size_t body_len,
         sent += (size_t)n;
     }
 
-    status = out ? read_body_response(s, out, out_cap)
-                 : read_status_response(s, meta);
+    status = out ? read_body_response(s, out, out_cap, deadline)
+                 : read_status_response(s, meta, deadline);
 
     sock_close(s);
     ph_strbuf_free(&req);
