@@ -221,6 +221,10 @@ void suite_offline(void) {
         remove(blocker);
         write_file(blocker, "not a directory");
         cfg.offline_path = blocker;
+        cfg.max_retries = 0; /* This asserts spill-failure accounting, not retry
+                              * timing: fail the 500 immediately so st_failed is
+                              * recorded well within ph_flush, instead of racing
+                              * ~700ms of backoff on a slow macOS runner. */
         CHECK(ph_init(&cfg) == PH_OK);
         mock_reset();
         mock_install();

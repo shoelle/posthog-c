@@ -420,11 +420,15 @@ static uint64_t posix_fault_pc(void *uctx) {
     return (uint64_t)((ucontext_t *)uctx)->uc_mcontext.gregs[REG_RIP];
 #elif defined(__linux__) && defined(__aarch64__)
     return (uint64_t)((ucontext_t *)uctx)->uc_mcontext.pc;
-#elif defined(__APPLE__) && defined(__x86_64__)
-    return (uint64_t)((ucontext_t *)uctx)->uc_mcontext->__ss.__rip;
-#elif defined(__APPLE__) && defined(__aarch64__)
-    return (uint64_t)((ucontext_t *)uctx)->uc_mcontext->__ss.__pc;
 #else
+    /* macOS reaches the fault PC through uc_mcontext, a pointer to a separately
+     * allocated mcontext. Reading __ss.__pc/__rip through it faulted inside the
+     * handler on the arm64 CI runner - re-entering the handler (g_in_handler)
+     * and aborting capture with _exit(134) before the record was written. Fall
+     * back to backtrace() on macOS: its top frames are this handler + the signal
+     * trampoline, so the faulting instruction simply isn't hoisted to the front
+     * of the trace. TODO: restore an alignment-safe macOS PC read once it can be
+     * validated on real hardware. */
     (void)uctx;
     return 0;
 #endif
