@@ -189,7 +189,11 @@ typedef struct ph_config {
     int gzip;               /* gzip /batch/ bodies with Content-Encoding: gzip
                              * (default 1 = on; native only, wasm ignores it) */
 
-    const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only */
+    const char *offline_path; /* dir for the on-disk spill queue; NULL = memory-only.
+                               * Records are plaintext containing the project token
+                               * + event data (0600 on POSIX; inherited ACL on
+                               * Windows). Use one SDK process per directory and
+                               * protect the parent directory. */
     const char *release;      /* e.g. "myapp@1.2.3" - tags every event */
 
     int enabled;         /* master switch; 0 => every call is a no-op */
@@ -348,8 +352,10 @@ void ph_reload_feature_flags(void);
 /* --- Draining --------------------------------------------------------- */
 
 /*
- * Total events dropped so far: ring overflow (drop-oldest) plus rate-limit
- * rejections. A monotonic counter for health dashboards / diagnostics.
+ * Total terminal event loss so far: ring overflow, rate-limit/before_send
+ * rejection, serialization/size rejection, permanent HTTP rejection, or a
+ * delivery/persistence failure. A monotonic health counter. Events durably
+ * queued offline are not lost and do not increment it.
  */
 uint64_t ph_dropped_events(void);
 

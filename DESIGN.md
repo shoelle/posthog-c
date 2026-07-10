@@ -74,6 +74,10 @@ pack event -> bounded ring  --enqueue-> drain <= max_batch/POST at
   `max_batch_bytes` is split further, so no single POST trips the ingestion size
   limit). `ph_flush` wakes it and blocks on a drained handshake; `ph_shutdown`
   flushes, joins, and frees.
+- **Offline storage** is one bounded NDJSON file rewritten atomically after
+  replay/cap pruning and created with private POSIX permissions. It is plaintext
+  and contains the project token plus event properties; hosts must protect its
+  parent directory and use one SDK process per offline directory.
 - **Transport seam.** Delivery goes through a small vtable
   ([`ph_transport`](src/ph_internal.h)). The default is plaintext HTTP; tests
   swap in a capturing mock. TLS (v0.2) slotted in as a second transport, not a

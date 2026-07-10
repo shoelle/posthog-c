@@ -75,6 +75,7 @@ void suite_scrub(void) {
         CHECK(mock_batch_count() == 1);
         CHECK_CONTAINS(mock_batch(0), "kept_event");
         CHECK_NOT_CONTAINS(mock_batch(0), "secret_event");
+        CHECK(ph_dropped_events() == 1);
         ph_shutdown();
     }
 

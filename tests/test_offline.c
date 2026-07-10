@@ -92,6 +92,7 @@ void suite_offline(void) {
     CHECK(mock_batch_count() == 4); /* initial failed attempt + default 3 retries */
     content = read_file(path, &clen);
     CHECK_MSG(content != NULL && clen > 0, "expected a non-empty spill file");
+    CHECK(atomic_load(&g_ph.st_failed) == 0); /* durable spill is not loss */
     if (content) {
         CHECK_CONTAINS(content, "offline_ev");
         CHECK_CONTAINS(content, "phc_offline");
@@ -103,6 +104,7 @@ void suite_offline(void) {
     ph_flush(2000);
     CHECK(mock_batch_count() >= 1);
     CHECK_CONTAINS(mock_batch(0), "offline_ev");
+    CHECK(atomic_load(&g_ph.st_sent) == 1); /* replay delivery is accounted */
     content = read_file(path, &clen);
     CHECK_MSG(content == NULL || clen == 0, "expected the spill file drained");
     if (content) free(content);
@@ -199,4 +201,22 @@ void suite_offline(void) {
 
     ph_shutdown();
     remove(path);
+
+    /* --- persistence failure is reported as event loss, never as a spill --- */
+    {
+        char blocker[300];
+        snprintf(blocker, sizeof(blocker), "%s/offline_path_is_a_file", dir);
+        write_file(blocker, "not a directory");
+        cfg.offline_path = blocker;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        mock_set_status(500);
+        ph_capture("spill_must_fail", NULL);
+        ph_flush(2000);
+        CHECK(atomic_load(&g_ph.st_failed) == 1);
+        CHECK(ph_dropped_events() == 1);
+        ph_shutdown();
+        remove(blocker);
+    }
 }

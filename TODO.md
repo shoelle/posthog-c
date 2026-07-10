@@ -45,7 +45,7 @@ relevant native/WASM verification are green.
 
 ### Correctness, privacy, and reliability
 
-- [ ] **Make offline persistence report and preserve reality.** Propagate open,
+- [x] **Make offline persistence report and preserve reality.** Propagate open,
   allocation, and short-write failures; update failure/drop statistics instead
   of logging a successful spill; rewrite via temp file + flush/fsync + atomic
   rename; secure POSIX directories/files as 0700/0600; document that the file is
@@ -78,7 +78,7 @@ relevant native/WASM verification are green.
   while later events use the stored 127-byte truncation. Validate API key, host,
   release, offline path, distinct IDs, group keys/types, and event names with
   clear result codes or documented truncation behavior.
-- [ ] **Make diagnostics complete.** Count successful offline replays, permanent
+- [x] **Make diagnostics complete.** Count successful offline replays, permanent
   replay rejects, over-cap spill drops, and persistence failures consistently;
   define whether `ph_dropped_events()` includes `before_send` and delivery loss;
   keep `on_stats` and log messages aligned with those definitions.

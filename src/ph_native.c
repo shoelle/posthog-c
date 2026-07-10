@@ -10,6 +10,7 @@
  * in max_batch-sized POSTs.
  */
 #include "ph_internal.h"
+#include "ph_jsonval.h"
 #include "ph_str.h"
 #include "ph_time.h"
 #include "ph_util.h"
@@ -17,12 +18,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #if defined(_WIN32)
 #include <direct.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 #else
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 
 /* api_host + "/batch/", tolerating a trailing slash on the host. */
@@ -79,12 +86,70 @@ static int post_and_note(const char *body, size_t len) {
  * offline for a long stretch loses nothing when it reconnects.
  */
 
-static void ensure_offline_dir(void) {
+static int ensure_offline_dir(void) {
 #if defined(_WIN32)
-    _mkdir(g_ph.offline_path);
+    return _mkdir(g_ph.offline_path) == 0 || errno == EEXIST;
 #else
-    mkdir(g_ph.offline_path, 0777);
+    return mkdir(g_ph.offline_path, 0700) == 0 || errno == EEXIST;
 #endif
+}
+
+static FILE *open_private_file(const char *path, int append) {
+#if defined(_WIN32)
+    int flags = _O_WRONLY | _O_CREAT | _O_BINARY |
+                (append ? _O_APPEND : _O_TRUNC);
+    int fd = _open(path, flags, _S_IREAD | _S_IWRITE);
+    FILE *f;
+    if (fd < 0) return NULL;
+    f = _fdopen(fd, append ? "ab" : "wb");
+    if (!f) _close(fd);
+    return f;
+#else
+    int flags = O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+    int fd = open(path, flags, 0600);
+    FILE *f;
+    if (fd < 0) return NULL;
+    (void)fchmod(fd, 0600);
+    f = fdopen(fd, append ? "ab" : "wb");
+    if (!f) close(fd);
+    return f;
+#endif
+}
+
+static int durable_close(FILE *f) {
+    int ok = fflush(f) == 0;
+    if (ok) {
+#if defined(_WIN32)
+        ok = _commit(_fileno(f)) == 0;
+#else
+        ok = fsync(fileno(f)) == 0;
+#endif
+    }
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+static int atomic_replace(const char *tmp, const char *path) {
+#if defined(_WIN32)
+    return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING |
+                                  MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return rename(tmp, path) == 0;
+#endif
+}
+
+static int write_atomic(const char *path, const char *data, size_t len) {
+    char tmp[PH_PATH_CAP + 48];
+    FILE *f;
+    int ok;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    f = open_private_file(tmp, 0);
+    if (!f) return 0;
+    ok = len == 0 || fwrite(data, 1, len, f) == len;
+    if (!durable_close(f)) ok = 0;
+    if (ok) ok = atomic_replace(tmp, path);
+    if (!ok) remove(tmp);
+    return ok;
 }
 
 static void offline_spill_path(char *out, size_t cap) {
@@ -104,25 +169,53 @@ static long file_size(const char *path) {
     return sz;
 }
 
+static int batch_event_count(const char *body, size_t len) {
+    ph_jv *root = ph_jv_parse(body, len);
+    const ph_jv *batch;
+    int n = 0;
+    if (!root) return 0;
+    batch = ph_jv_get(root, "batch");
+    if (ph_jv_type_of(batch) == PH_JV_ARR) n = ph_jv_len(batch);
+    ph_jv_free(root);
+    return n;
+}
+
+static uint64_t event_count_in_lines(const char *buf, size_t len) {
+    size_t start = 0, i;
+    uint64_t count = 0;
+    for (i = 0; i < len; i++) {
+        if (buf[i] != '\n') continue;
+        if (i > start) count += (uint64_t)batch_event_count(buf + start, i - start);
+        start = i + 1;
+    }
+    return count;
+}
+
 /* Keep the spill file under the byte cap by dropping the oldest whole lines. */
-static void offline_enforce_cap(const char *path, size_t incoming) {
+static int offline_enforce_cap(const char *path, size_t incoming) {
     long sz = file_size(path);
     char *buf;
     size_t rd, target, drop;
     FILE *f;
+    uint64_t dropped_events = 0;
 
-    if (sz < 0) return;
-    if ((size_t)sz + incoming + 1 <= (size_t)PH_OFFLINE_MAX_BYTES) return;
+    if (incoming >= (size_t)PH_OFFLINE_MAX_BYTES) return 0;
+    if (sz < 0) return 1;
+    if ((size_t)sz + incoming + 1 <= (size_t)PH_OFFLINE_MAX_BYTES) return 1;
 
     f = fopen(path, "rb");
-    if (!f) return;
+    if (!f) return 0;
     buf = (char *)malloc((size_t)sz + 1);
     if (!buf) {
         fclose(f);
-        return;
+        return 0;
     }
     rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);
+    if (rd != (size_t)sz) {
+        free(buf);
+        return 0;
+    }
 
     /* Keep at most (cap - incoming) newest bytes, aligned to a line boundary. */
     target = (size_t)PH_OFFLINE_MAX_BYTES > incoming + 1
@@ -132,33 +225,37 @@ static void offline_enforce_cap(const char *path, size_t incoming) {
     while (drop < rd && buf[drop] != '\n') drop++;
     if (drop < rd) drop++; /* step past the newline */
 
-    f = fopen(path, "wb");
-    if (f) {
-        if (rd > drop) fwrite(buf + drop, 1, rd - drop, f);
-        fclose(f);
+    if (drop > 0) dropped_events = event_count_in_lines(buf, drop);
+    if (!write_atomic(path, rd > drop ? buf + drop : "", rd - drop)) {
+        free(buf);
+        return 0;
     }
+    if (dropped_events)
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)dropped_events);
     free(buf);
+    return 1;
 }
 
-static void offline_spill(const char *body, size_t len) {
+static int offline_spill(const char *body, size_t len) {
     char path[PH_PATH_CAP + 32];
     FILE *f;
-    if (!g_ph.offline_path[0] || len == 0) return;
-    ensure_offline_dir();
+    int ok;
+    if (!g_ph.offline_path[0] || len == 0) return 0;
+    if (!ensure_offline_dir()) return 0;
     offline_spill_path(path, sizeof(path));
-    offline_enforce_cap(path, len);
-    f = fopen(path, "ab");
+    if (!offline_enforce_cap(path, len)) return 0;
+    f = open_private_file(path, 1);
     if (!f) {
         ph_log(PH_LOG_WARN, "offline: cannot open spill file %s", path);
-        return;
+        return 0;
     }
     /* Only newline-terminate a fully-written record; a short write leaves the
      * partial unterminated so offline_replay's torn-tail guard drops it. */
-    if (fwrite(body, 1, len, f) == len)
-        fputc('\n', f);
-    else
+    ok = fwrite(body, 1, len, f) == len && fputc('\n', f) != EOF;
+    if (!ok)
         ph_log(PH_LOG_WARN, "offline: short write spilling to %s", path);
-    fclose(f);
+    if (!durable_close(f)) ok = 0;
+    return ok;
 }
 
 /* A deterministic client error - a 4xx other than 429 backpressure or 408
@@ -205,12 +302,15 @@ static void offline_replay(void) {
         if (buf[i] != '\n') continue;
         if (i > line_start) {
             size_t linelen = i - line_start;
+            int events = batch_event_count(buf + line_start, linelen);
             int keep_line;
             if (stopped) {
                 keep_line = 1; /* never attempted - keep for a later drain */
             } else if (g_ph.max_batch_bytes > 0 &&
                        linelen > (size_t)g_ph.max_batch_bytes) {
                 keep_line = 0;
+                if (events > 0)
+                    atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)events);
                 ph_log(PH_LOG_WARN,
                        "offline: dropping %lu-byte batch over max_batch_bytes",
                        (unsigned long)linelen);
@@ -218,10 +318,14 @@ static void offline_replay(void) {
                 int status = post_and_note(buf + line_start, linelen);
                 if (status >= 200 && status < 300) {
                     keep_line = 0; /* accepted (even a quota 200) - drop it */
+                    if (events > 0)
+                        atomic_fetch_add(&g_ph.st_sent, (uint_least64_t)events);
                     if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()))
                         stopped = 1; /* ...but hold the untried remainder */
                 } else if (is_permanent_reject(status)) {
                     keep_line = 0; /* client error - drop, don't block the queue */
+                    if (events > 0)
+                        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)events);
                     ph_log(PH_LOG_WARN,
                            "offline: dropping batch rejected with status %d", status);
                 } else {
@@ -246,18 +350,13 @@ static void offline_replay(void) {
     free(buf);
 
     if (keep.len == 0) {
-        remove(path);
-    } else {
-        f = fopen(path, "wb");
-        if (f) {
-            if (fwrite(keep.data, 1, keep.len, f) != keep.len)
-                ph_log(PH_LOG_WARN, "offline: short write rewriting spill; "
-                                    "delivered records may re-send");
-            fclose(f);
-        } else {
-            ph_log(PH_LOG_WARN, "offline: cannot rewrite spill %s; "
+        if (remove(path) != 0 && errno != ENOENT)
+            ph_log(PH_LOG_WARN, "offline: cannot remove drained spill %s; "
                                 "delivered records may re-send", path);
-        }
+    } else {
+        if (!write_atomic(path, keep.data, keep.len))
+            ph_log(PH_LOG_WARN, "offline: cannot atomically rewrite spill %s; "
+                                "delivered records may re-send", path);
     }
     ph_strbuf_free(&keep);
 }
@@ -433,8 +532,13 @@ static int send_one(const char *body, size_t len, int n) {
         ph_log(PH_LOG_WARN, "batch rejected (status %d); %d events dropped "
                             "(client error, will not retry)", status, n);
     } else if (g_ph.offline_path[0]) {
-        offline_spill(body, len);
-        ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
+        if (offline_spill(body, len)) {
+            ph_log(PH_LOG_INFO, "batch spilled to offline queue (status %d)", status);
+        } else {
+            atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+            ph_log(PH_LOG_ERROR, "offline spill failed; %d events lost (status %d)",
+                   n, status);
+        }
     } else {
         atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
         ph_log(PH_LOG_WARN,
@@ -478,7 +582,10 @@ static void persist_run(ph_event *evs, int n) {
                "single event exceeds max_batch_bytes; event dropped instead of spilled");
         return;
     }
-    offline_spill(body.data ? body.data : "", body.len);
+    if (!offline_spill(body.data ? body.data : "", body.len)) {
+        atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+        ph_log(PH_LOG_ERROR, "offline spill failed; %d held events lost", n);
+    }
     ph_strbuf_free(&body);
 }
 

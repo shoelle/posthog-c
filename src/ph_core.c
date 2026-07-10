@@ -542,12 +542,14 @@ void ph_unregister(const char *key) {
 }
 
 uint64_t ph_dropped_events(void) {
-    uint64_t rate_dropped;
+    uint64_t rate_dropped, scrub_dropped, delivery_failed;
     uint64_t ring_dropped = 0;
     if (!g_ph.initialized) return 0;
     if (g_ph.enabled) ring_dropped = ph_queue_dropped(&g_ph.queue);
     ph_mutex_lock(&g_ph.lock);
     rate_dropped = g_ph.rl_dropped;
     ph_mutex_unlock(&g_ph.lock);
-    return ring_dropped + rate_dropped;
+    scrub_dropped = atomic_load(&g_ph.st_before_send_dropped);
+    delivery_failed = atomic_load(&g_ph.st_failed);
+    return ring_dropped + rate_dropped + scrub_dropped + delivery_failed;
 }
