@@ -6,8 +6,8 @@
  * thread + an on-disk offline queue) and `wasm` (a thin shim over the
  * browser's already-loaded `window.posthog`). Callers never see the split.
  *
- * Everything rides PostHog's documented raw ingestion API (`/batch/`,
- * `/i/v0/e/`, `/flags/`) - no dependency on another PostHog SDK.
+ * Native rides PostHog's documented raw ingestion API (`/batch/`, `/flags/`).
+ * WASM intentionally delegates to a host-loaded posthog-js instance.
  *
  * This is a C header: any C or C++ program can include it, and any language
  * can bind the resulting interface. A header-only C++ convenience wrapper lives in
@@ -19,6 +19,8 @@
  * ph_init()/ph_shutdown() and stop/join its callers before shutdown; lifecycle
  * calls are not concurrent operations. On native, capture() copies into a
  * bounded queue and returns; all network I/O happens on a background sender.
+ * WASM calls posthog-js synchronously and may allocate/run before_send on the
+ * caller thread, so native hot-path guarantees do not apply to that backend.
  */
 #ifndef POSTHOG_H
 #define POSTHOG_H
@@ -147,6 +149,7 @@ ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
  * Runs before serialization for capture and control events. Native events run
  * on the sender thread except exceptions, which scrub before enqueue so
  * structured exception text can be redacted before $exception_list is built.
+ * WASM runs the hook synchronously on the caller thread before posthog-js.
  * Mutate `props` in place to redact, or return 0 to drop the event entirely.
  * Return nonzero to keep it. `event` is the event name. `user` is
  * ph_config.user_data. NULL hook = pass-through.
@@ -208,7 +211,8 @@ typedef struct ph_config {
 
     int rate_limit_per_sec; /* token-bucket cap on capture/exception events per
                              * second (burst == this value); <= 0 = unlimited.
-                             * Stops a runaway loop from flooding ingestion. */
+                             * Stops a runaway loop from flooding ingestion.
+                             * Native only; wasm/posthog-js owns delivery. */
     const char *const *property_denylist; /* keys stripped from every event
                                            * before send; NULL = none */
     int property_denylist_count;          /* number of keys in property_denylist */
@@ -266,8 +270,8 @@ typedef struct ph_exception {
 /* --- Lifecycle & capture ----------------------------------------- */
 
 /*
- * Initialize the global SDK instance. Copies config, generates or adopts the
- * distinct id, starts the native sender thread. Returns PH_OK on success.
+ * Initialize the global SDK instance. Copies config, adopts the host-persisted
+ * distinct id, and starts the native sender thread. Returns PH_OK on success.
  * Calling when already initialized returns PH_ERR. If cfg->enabled is 0, the
  * SDK initializes into a no-op state and every call below returns quietly.
  * Over-cap string configuration is rejected with PH_ERR_BADARG rather than
@@ -303,7 +307,15 @@ void ph_identify(const char *distinct_id, const ph_props *set_props);
  * PH_ERR_TRUNCATED. */
 void ph_alias(const char *new_id, const char *old_id);
 
-/* Logout: clear identity + super properties, roll a fresh anonymous id. */
+/* Copy the current distinct id into out. This is the configured install id,
+ * the latest ph_identify id, or the fresh anonymous id created by ph_reset.
+ * Returns PH_OK, PH_ERR_TRUNCATED when cap is too small, PH_ERR_DISABLED when
+ * the SDK is off, or PH_ERR_BADARG for a NULL/non-positive output buffer. */
+ph_result ph_get_distinct_id(char *out, int cap);
+
+/* Logout: clear identity + super properties and roll a fresh anonymous id.
+ * Persist the new value returned by ph_get_distinct_id() before the next launch
+ * if anonymous activity must remain stable across process/browser restarts. */
 void ph_reset(void);
 
 /* Create/attach a group (emits $groupidentify; scopes later events via $groups).
@@ -355,13 +367,15 @@ void ph_reload_feature_flags(void);
  * Total terminal event loss so far: ring overflow, rate-limit/before_send
  * rejection, serialization/size rejection, permanent HTTP rejection, or a
  * delivery/persistence failure. A monotonic health counter. Events durably
- * queued offline are not lost and do not increment it.
+ * queued offline are not lost and do not increment it. WASM returns 0 because
+ * posthog-js does not expose compatible delivery/drop accounting here.
  */
 uint64_t ph_dropped_events(void);
 
 /*
  * Block until the queue drains or timeout_ms elapses (0 = don't wait, -1 =
- * wait indefinitely). Use before a short-lived process exits.
+ * wait indefinitely). Use before a short-lived native process exits. WASM is
+ * a no-op because posthog-js owns its queue and lifecycle.
  */
 void ph_flush(int timeout_ms);
 

@@ -49,6 +49,7 @@ inline void identify(const char *distinct_id) { ph_identify(distinct_id, nullptr
 inline void identify(const char *distinct_id, const Props &set_props) { ph_identify(distinct_id, set_props.raw()); }
 
 inline void alias(const char *new_id, const char *old_id) { ph_alias(new_id, old_id); }
+inline ph_result get_distinct_id(char *out, int cap) { return ph_get_distinct_id(out, cap); }
 inline void reset() { ph_reset(); }
 
 inline void group(const char *type, const char *key) { ph_group(type, key, nullptr); }

@@ -9,8 +9,8 @@ This is a source-distributed SDK: compile it and its headers with your applicati
 ## Details
 
 - **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a thin shim over the browser's already-loaded `window.posthog`.
-- **No dependency on other PostHog SDKs.** Follows PostHog's documented HTTP endpoints (`/batch/`, `/i/v0/e/`, `/flags/`).
-- **Never on the hot path.** `ph_capture()` copies into a bounded ring and returns - real work (JSON, networking, allocation, clock read, RNG) happens on the background worker thread. Should be safe to call from a real time / simulation loop.
+- **Native has no SDK dependency.** It follows PostHog's raw HTTP endpoints; WASM deliberately delegates to the page's already-loaded posthog-js.
+- **Native hot-path-safe capture.** `ph_capture()` copies into a bounded ring and returns; JSON, networking, allocation, wall-clock reads, and RNG happen on the worker. WASM calls posthog-js and `before_send` synchronously, so this guarantee is native-only.
 - **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a property denylist, and a master kill-switch (see "Privacy & reliability" in [DESIGN.md](DESIGN.md)).
 
 ## Quick start (C)
@@ -22,6 +22,7 @@ ph_config cfg;
 ph_config_defaults(&cfg);
 cfg.api_key = "phc_your_project_key";
 cfg.api_host = "http://localhost:8000"; // dev proxy (http); or https://us.i.posthog.com on Windows
+cfg.distinct_id = "install-id-from-your-storage"; // create once and persist
 ph_init(&cfg);
 
 ph_props p;
@@ -48,6 +49,31 @@ posthog::identify("user-123");
 ```
 
 See [`examples/quickstart.c`](examples/quickstart.c) and [`examples/quickstart.cpp`](examples/quickstart.cpp).
+
+`distinct_id` is required. Supply a random install/device ID loaded from your
+application's durable settings, then replace it with `ph_identify()` after sign
+in. `ph_reset()` deliberately rolls a new anonymous ID on logout; read it with
+`ph_get_distinct_id()` and persist it before the next launch.
+
+For WASM, initialize posthog-js first with that same ID and expose it as
+`window.__posthog_c_distinct_id` before calling `ph_init()`. The shim rejects a
+mismatch so browser and native activity cannot silently split identities.
+
+### Backend contract
+
+| Behavior | Native | WASM |
+|---|---|---|
+| Delivery | SDK sender, retry, gzip, offline spill | host-loaded posthog-js |
+| `ph_capture` | bounded enqueue; no heap/wall clock/RNG | synchronous JS bridge; may allocate |
+| `before_send` | sender thread (exceptions pre-enqueue) | caller thread |
+| flags | SDK `/flags/` cache | posthog-js flag cache |
+| rate limit, stats, dropped count | implemented by posthog-c | ignored / returns 0 |
+| `ph_flush`, `ph_shutdown` | drains and owns lifecycle | no-op / releases shim state only |
+
+Both backends share the fixed C API, typed property encoding, denylist behavior,
+and event/control-property privacy tests. Timestamps, UUIDs, automatic
+properties, batching, profiles, flag evaluation, retry, and persistence belong
+to each backend's delivery owner and are not byte-for-byte equivalent.
 
 ## Build
 

@@ -7,13 +7,15 @@
  * Run via `zig build test-wasm` (which emcc-compiles ./test_wasm.mjs first).
  */
 const calls = [];
+let currentDistinctId = "install-abc";
 globalThis.window = {
     __posthog_c_distinct_id: "install-abc",
     posthog: {
         capture: (event, props) => calls.push({ fn: "capture", event, props }),
         identify: (id, props) => calls.push({ fn: "identify", id, props }),
         group: (type, key, props) => calls.push({ fn: "group", type, key, props }),
-        reset: () => calls.push({ fn: "reset" }),
+        reset: () => { currentDistinctId = "reset-anon-1"; calls.push({ fn: "reset" }); },
+        get_distinct_id: () => currentDistinctId,
         register: (props) => calls.push({ fn: "register", props }),
         alias: (a, b) => calls.push({ fn: "alias", a, b }),
         captureException: (err, props) => calls.push({ fn: "captureException", name: err.name, message: err.message, props }),
@@ -38,7 +40,7 @@ function check(cond, msg) {
 const Module = await createPH();
 Module._wasm_run_test();
 
-const cap = calls.find((c) => c.fn === "capture");
+const cap = calls.find((c) => c.fn === "capture" && c.event === "level_started");
 check(cap, "capture reached window.posthog");
 check(cap && cap.event === "level_started", "event name = level_started");
 check(cap && cap.props.weapon === "sword", "string prop weapon=sword");
@@ -50,6 +52,7 @@ check(cap && cap.props.scrubbed === true, "before_send added scrubbed=true");
 check(cap && !("token" in cap.props), "denylist stripped token");
 check(cap && !("secret" in cap.props), "before_send stripped secret");
 check(!calls.some((c) => c.event === "drop_me"), "before_send dropped drop_me");
+check(calls.some((c) => c.event === "distinct_id_getter_ok"), "current distinct id is readable");
 
 const id = calls.find((c) => c.fn === "identify");
 check(id && id.id === "acct-9", "identify id=acct-9");

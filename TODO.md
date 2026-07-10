@@ -33,7 +33,7 @@ relevant native/WASM verification are green.
   dependency artifact currently has no way to receive matching overrides.
   Either expose dependency build options and a consumer helper that applies the
   same defines, or remove the documented override promise / make the ABI opaque.
-- [ ] **Define a stable anonymous-identity contract.** Native currently creates
+- [x] **Define a stable anonymous-identity contract.** Native currently creates
   a fresh memory-only ID on every launch while WASM requires a host-persisted
   ID. Either require `distinct_id` consistently or provide an explicit
   persistence/load-save mechanism; make the quickstarts demonstrate stable
@@ -67,7 +67,7 @@ relevant native/WASM verification are green.
 - [x] **Identify native flag requests as a PostHog SDK runtime.** Send an
   appropriate `User-Agent`/SDK header so PostHog runtime filtering does not
   classify posthog-c as unknown and omit native/server-scoped flags.
-- [ ] **Resolve native/WASM semantic parity honestly.** Today only scalar
+- [x] **Resolve native/WASM semantic parity honestly.** Today only scalar
   property JSON is shared: WASM delegates timestamps, UUIDs, auto-properties,
   person profiles, flags, retries, and delivery to posthog-js; it also allocates
   and runs `before_send` on the caller thread, ignores the native rate limiter

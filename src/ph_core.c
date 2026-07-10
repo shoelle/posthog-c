@@ -46,6 +46,7 @@ static ph_result validate_config(const ph_config *cfg) {
     if (!cfg) return PH_ERR_BADARG;
     if (!cfg->enabled) return PH_OK;
     if (!cfg->api_key || !cfg->api_key[0]) return PH_ERR_BADARG;
+    if (!cfg->distinct_id || !cfg->distinct_id[0]) return PH_ERR_BADARG;
     host = (cfg->api_host && cfg->api_host[0]) ? cfg->api_host
                                                : "https://us.i.posthog.com";
     if (strncmp(host, "http://", 7) != 0 && strncmp(host, "https://", 8) != 0)
@@ -175,10 +176,7 @@ ph_result ph_init(const ph_config *cfg) {
     atomic_init(&g_ph.st_before_send_dropped, 0);
     g_ph.flags_context_gen = 1;
 
-    if (cfg->distinct_id && cfg->distinct_id[0])
-        ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, cfg->distinct_id);
-    else
-        gen_anon_id(g_ph.distinct_id); /* v0.1: memory-only; host owns persistence */
+    ph_copy_capped(g_ph.distinct_id, PH_DISTINCT_ID_CAP, cfg->distinct_id);
     g_ph.identified = 0;
 
     /* One clock reading; every event's wall time is reconstructed from it. */
@@ -436,6 +434,18 @@ void ph_alias(const char *new_id, const char *old_id) {
     ph_props_init(&p);
     ph_props_set_str(&p, "alias", new_capped);
     ph__submit_event(PH_EV_ALIAS, 0, "$create_alias", old_capped, &p, 0, 0, NULL, 0);
+}
+
+ph_result ph_get_distinct_id(char *out, int cap) {
+    size_t len;
+    if (!out || cap <= 0) return PH_ERR_BADARG;
+    out[0] = '\0';
+    if (!g_ph.enabled) return PH_ERR_DISABLED;
+    ph_mutex_lock(&g_ph.lock);
+    len = strlen(g_ph.distinct_id);
+    ph_copy_capped(out, (size_t)cap, g_ph.distinct_id);
+    ph_mutex_unlock(&g_ph.lock);
+    return len >= (size_t)cap ? PH_ERR_TRUNCATED : PH_OK;
 }
 
 void ph_reset(void) {

@@ -37,6 +37,7 @@ void wasm_run_test(void) {
     ph_props p;
     static const char *denylist[] = {"token"};
     char flag[16];
+    char distinct_id[PH_DISTINCT_ID_CAP];
 
     ph_config_defaults(&cfg);
     cfg.api_key = "phc_wasm";
@@ -45,6 +46,9 @@ void wasm_run_test(void) {
     cfg.property_denylist = denylist;
     cfg.property_denylist_count = 1;
     ph_init(&cfg);
+    if (ph_get_distinct_id(distinct_id, sizeof(distinct_id)) == PH_OK &&
+        strcmp(distinct_id, "install-abc") == 0)
+        ph_capture("distinct_id_getter_ok", NULL);
 
     ph_props_init(&p);
     ph_props_set_str(&p, "super_keep", "yes");

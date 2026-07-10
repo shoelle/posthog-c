@@ -15,6 +15,7 @@ int main() {
     ph_config_defaults(&cfg);
     cfg.api_key = "phc_your_project_key";
     cfg.api_host = "http://localhost:8000"; // dev proxy; or https://us.i.posthog.com on Windows
+    cfg.distinct_id = "install-id-from-your-storage"; // create once + persist in app settings
     cfg.release = "quickstart-cpp@0.1.0";
 
     posthog::Session session(cfg); // ph_init here; flush + shutdown at scope exit

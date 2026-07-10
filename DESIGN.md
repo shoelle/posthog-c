@@ -11,13 +11,13 @@ decision-oriented companion to the code; the public contract is
   SDK and headers with their application; this unofficial 0.x project does not
   promise source or binary compatibility between releases.
 - **Two transports, one API.** `native` brings its own HTTP + threading; `wasm`
-  reuses the browser's `window.posthog`. Callers can't tell which is compiled
-  in. Only the delivery mechanism differs.
-- **Ride the raw ingestion API** (`/batch/`, `/i/v0/e/`, `/flags/`) - no
-  dependency on another PostHog SDK.
-- **Embeddable and hot-path-safe.** POD configs, fixed-capacity buffers, no
-  exceptions/RTTI in the core, and a capture path that never allocates so it
-  can be called from a deterministic simulation loop.
+  reuses the browser's `window.posthog`. The function surface is common, while
+  delivery ownership and some runtime semantics are backend-specific.
+- **Ride the raw ingestion API on native** (`/batch/`, `/flags/`) with no other
+  SDK dependency; deliberately reuse posthog-js on browser WASM.
+- **Embeddable and native-hot-path-safe.** POD configs, fixed-capacity buffers,
+  no exceptions/RTTI in the core, and a native capture path that never
+  allocates. The posthog-js bridge has no real-time/hot-path guarantee.
 
 ## 1. One C interface, two transports
 
@@ -37,10 +37,12 @@ already loaded posthog-js, so the **wasm** backend is a ~30-line `EM_ASM` shim
 that calls straight into the live `window.posthog`, reusing its batching,
 retry, and offline machinery rather than shipping a second network stack.
 
-The event model and JSON shape are shared, so the two backends emit
-byte-comparable events. That parity is enforced against the serializer
-([`src/ph_serialize.c`](src/ph_serialize.c)), which is pure and directly
-unit-tested.
+The fixed C types and scalar property encoder are shared. The WASM harness tests
+that strings, integers, doubles, booleans, denylist rules, and control-event
+privacy reach posthog-js intact. Full event envelopes are intentionally not
+byte-comparable: native owns timestamps, UUIDs, auto-properties, batching,
+profiles, flags, retry, and persistence, while WASM delegates those to
+posthog-js.
 
 ## 2. Native delivery pipeline
 
@@ -141,23 +143,22 @@ customer's own integration reference:
   produced by the serializer from typed helpers, so a caller can't get the JSON
   wrong by hand.
 
-## 5. Privacy & reliability (parity across native + wasm)
+## 5. Privacy & reliability
 
 - **`before_send(event, props) -> keep|drop`** runs before serialization for
   capture and control events: native events run on the sender thread, while
   exception events scrub before enqueue so structured exception text can be
   redacted before `$exception_list` is built. Mutate `props` to redact, or
-  return 0 to drop the event. Implemented.
-  A reference scrubber (strip tokens,
-  IPs, emails, URL query strings) with shared test vectors follows, so native
-  and wasm can't drift.
+  return 0 to drop the event. WASM performs the same property-level pass on the
+  caller thread before entering posthog-js; native capture/control events
+  normally run it on the sender.
 - **`property_denylist`** strips named keys from every event in the same
   sender-side scrub pass - the blunt companion to the programmable hook. The
   scrub pass unpacks a ring slot back into a `ph_props`, applies the denylist +
   hook, and repacks, leaving `$groups` untouched. Explicit event properties are
   merged before non-shadowed super properties, so the fixed public cap behaves
   identically with or without privacy enabled.
-- **Rate limiter.** A token bucket on the capture path (`rate_limit_per_sec`)
+- **Native rate limiter.** A token bucket on the capture path (`rate_limit_per_sec`)
   caps product/exception events so a runaway loop can't flood ingestion. It
   refills from the monotonic tick capture already reads, so the hot path stays
   wall-clock/RNG/heap-free. Rate rejections + ring-overflow drops surface via
@@ -182,6 +183,10 @@ customer's own integration reference:
   so it is not resent. The `200`-body detection is PostHog-specific and lives in
   the sender ([`src/ph_native.c`](src/ph_native.c)), keeping `ph_ratelimit` a
   generic RFC-9110 module.
+- **WASM delivery ownership.** posthog-js owns its batching, timestamps, UUIDs,
+  automatic properties, profiles, retries, persistence, and flag cache. The C
+  shim has no compatible delivery statistics, so `ph_dropped_events()` returns
+  0, `on_stats` and the native limiter are ignored, and `ph_flush()` is a no-op.
 - **Anonymous by default**, `respect_dnt` (planned), and a master `enabled`
   kill-switch (`enabled = 0` makes every call a no-op with no thread).
 - Designed for privacy-sensitive apps, including those serving minors: the SDK
@@ -195,7 +200,7 @@ customer's own integration reference:
 | **v0.1** (done) | C API, `ph_props`, JSON serializer, ring queue, sender thread, `/batch/` over plaintext, mock-transport tests |
 | **Privacy/reliability** (done) | `before_send` scrubber, `property_denylist`, capture rate limiter, server backpressure (429/`Retry-After` + `quota_limited` body), offline disk queue (spill/replay), `ph_dropped_events()` |
 | **v0.2 TLS** (Windows, done) | Validated HTTPS via WinHTTP -> real `us.i.posthog.com`; Linux/macOS (vendored BearSSL) pending |
-| **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; parity verified under Node (`zig build test-wasm`) |
+| **v0.3 WASM** (done) | `EM_ASM` shim over window.posthog; property/control bridge verified under Node (`zig build test-wasm`) |
 | **v0.5 error tracking** (done) | `ph_capture_exception` -> `$exception_list` (mechanism + raw stack frames) |
 | **v0.6 crash capture** (done) | in-process `signal_crash` handler (POSIX signals / Windows SEH) -> a persisted `$exception` replayed next launch; module+offset frames |
 | **v0.7 feature flags** (done) | remote `/flags/` eval + local cache + deduped `$feature_flag_called` |

@@ -210,6 +210,7 @@ void suite_capture(void) {
         cfg.api_host = "ftp://invalid";
         CHECK(ph_init(&cfg) == PH_ERR_BADARG);
         cfg.api_host = "https://us.i.posthog.com";
+        CHECK(ph_init(&cfg) == PH_ERR_BADARG); /* stable distinct_id is required */
         cfg.distinct_id = long_id;
         CHECK(ph_init(&cfg) == PH_ERR_BADARG);
         cfg.distinct_id = "valid";
@@ -225,6 +226,26 @@ void suite_capture(void) {
         cfg.max_queue = 1000;
         cfg.max_batch_bytes = -1;
         CHECK(ph_init(&cfg) == PH_ERR_BADARG);
+    }
+
+    /* --- current identity is observable so reset ids can be persisted --- */
+    {
+        char id[PH_DISTINCT_ID_CAP];
+        char tiny[4];
+        init_test_sdk();
+        CHECK(ph_get_distinct_id(id, sizeof(id)) == PH_OK);
+        CHECK(strcmp(id, "anon-123") == 0);
+        CHECK(ph_get_distinct_id(tiny, sizeof(tiny)) == PH_ERR_TRUNCATED);
+        ph_identify("account-42", NULL);
+        CHECK(ph_get_distinct_id(id, sizeof(id)) == PH_OK);
+        CHECK(strcmp(id, "account-42") == 0);
+        ph_reset();
+        CHECK(ph_get_distinct_id(id, sizeof(id)) == PH_OK);
+        CHECK(id[0] != '\0');
+        CHECK(strcmp(id, "account-42") != 0);
+        CHECK(strcmp(id, "anon-123") != 0);
+        ph_shutdown();
+        CHECK(ph_get_distinct_id(id, sizeof(id)) == PH_ERR_DISABLED);
     }
 
     /* --- ph_capture returns the fate of the event --- */

@@ -8,7 +8,10 @@
  * (via a host-owned window.__posthog_c_distinct_id), disabling capture on a
  * mismatch rather than splitting a user's web and native timelines; and (b)
  * serialize ph_props with the *same* encoder the native path uses, so event
- * property shapes stay comparable across backends.
+ * scalar property shapes stay comparable across backends. posthog-js remains
+ * the owner of timestamps, UUIDs, automatic properties, profiles, flags,
+ * batching, retry, and persistence; native hot-path/delivery guarantees do not
+ * apply to this synchronous bridge.
  *
  * The public API is implemented entirely here; the shared property/JSON code
  * (ph_props.c, ph_json.c, ph_str.c, ph_serialize.c) compiles into the wasm
@@ -196,11 +199,32 @@ void ph_alias(const char *new_id, const char *old_id) {
     }, new_capped, old_capped);
 }
 
+ph_result ph_get_distinct_id(char *out, int cap) {
+    int len;
+    if (!out || cap <= 0) return PH_ERR_BADARG;
+    out[0] = '\0';
+    if (!g_enabled || !g_identity_ok) return PH_ERR_DISABLED;
+    len = EM_ASM_INT({
+        if (typeof window === 'undefined' || !window.posthog ||
+            !window.posthog.get_distinct_id) return -1;
+        var id = String(window.posthog.get_distinct_id());
+        var len = new TextEncoder().encode(id).length;
+        stringToUTF8(id, $0, $1);
+        return len;
+    }, out, cap);
+    if (len < 0) return PH_ERR;
+    return len >= cap ? PH_ERR_TRUNCATED : PH_OK;
+}
+
 void ph_reset(void) {
     if (!g_enabled) return;
     ph_props_init(&g_super);
     EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog) window.posthog.reset();
+        if (typeof window !== 'undefined' && window.posthog) {
+            window.posthog.reset();
+            if (window.posthog.get_distinct_id)
+                window.__posthog_c_distinct_id = String(window.posthog.get_distinct_id());
+        }
     });
 }
 
