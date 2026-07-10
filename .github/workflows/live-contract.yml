@@ -1,6 +1,8 @@
 name: Live PostHog contract
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -18,9 +20,23 @@ jobs:
       POSTHOG_EXPECT_FLAG: ${{ vars.POSTHOG_EXPECT_FLAG }}
       POSTHOG_EXPECT_PAYLOAD: ${{ vars.POSTHOG_EXPECT_PAYLOAD }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      # A fork/clone won't have POSTHOG_API_KEY - skip cleanly (green), never red.
+      - name: Credentials present?
+        id: gate
+        shell: bash
+        run: |
+          if [ -n "$POSTHOG_API_KEY" ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::POSTHOG_API_KEY not set; skipping the live contract."
+          fi
+      - if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - if: steps.gate.outputs.go == 'true'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
-      - name: Ingestion, flags, payload, and exposure contract
+      - if: steps.gate.outputs.go == 'true'
+        name: Ingestion, flags, payload, and exposure contract
         run: zig build -Doptimize=ReleaseSafe live-contract
