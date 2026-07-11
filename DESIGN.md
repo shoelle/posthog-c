@@ -30,6 +30,10 @@ Identity and super-properties are baked into each event at capture, so the sende
 - **Background thread over call-and-pump**: an inline pump would risk blowing a frame, and the crash handler needs process-global state anyway; `ph_flush()` already covers the frame-seam case.
 - **Out of scope**: session replay (nothing to record from C, and a privacy liability).
 
+## Delivery guarantees
+
+Capture is at-most-once by design: a full ring drops the oldest event (and counts it), a token bucket sheds bursts, and nothing ever blocks the caller. That is the right trade for product analytics, where aggregates carry the meaning and one lost event among thousands does not. Error and crash reporting want the opposite, at-least-once: the first occurrence of a novel fault is the single event you cannot afford to drop, and drop-oldest would happily evict it to keep a repeat. The design already carves out the critical case - a crash is persisted once and replayed next launch, never left in the volatile ring - but fully serving both domains would tier delivery by event importance (analytics lossy, errors prioritized and spilled, crashes durable) rather than apply one global policy. Noted, not built.
+
 ## Crash capture (`signal_crash`, opt-in)
 
 A fatal native fault (POSIX signal / Windows SEH) is persisted as one fixed record and replayed as a `$exception` on the next launch - a crashing process can't reliably reach the network, so the flow is crash -> persist -> replay, reusing the offline queue's replay half. Frames are stored as `(module, offset)` so they survive ASLR; turning them into function names is a future out-of-process job. In-process capture is best-effort - `backtrace`/`dladdr` aren't async-signal-safe - which is the fundamental reason robust capture is ultimately out-of-process (Crashpad).
