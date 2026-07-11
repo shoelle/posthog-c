@@ -34,6 +34,12 @@ int ph__http_parse_response_meta(const char *resp, size_t resp_len,
  * waiting for connection close. */
 int ph__http_send_response_complete(const char *resp, size_t resp_len);
 
+/* True once the fetch/body path has enough bytes to stop reading without
+ * waiting for connection close. Close-delimited bodies only complete at EOF, so
+ * this only returns true for framed responses (Content-Length or chunked), plus
+ * terminal framing errors. */
+int ph__http_body_response_complete(const char *resp, size_t resp_len);
+
 /* Decode a complete HTTP response into a bounded body buffer. Chunked transfer
  * coding is removed and Content-Length is enforced. Returns the HTTP status,
  * PH_HTTP_RESPONSE_TRUNCATED for malformed/incomplete framing, or

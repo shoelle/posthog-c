@@ -258,7 +258,7 @@ static int tls_connect(const char *host, int port, uint64_t deadline) {
 }
 
 /* Build the raw HTTP/1.1 request (mirrors ph_http_build_request; Connection:
- * close so the server closes after the response and we read to EOF). */
+ * close gives close-delimited responses a clean EOF fallback). */
 static void tls_build_request(ph_strbuf *out, const char *host, int port,
                               const char *path, const char *body, size_t body_len,
                               const char *content_encoding) {
@@ -305,6 +305,13 @@ static int tls_finish(const char *resp, size_t resp_len, int require_full_body,
         }
         return status;
     }
+}
+
+static int tls_response_complete(const char *resp, size_t resp_len,
+                                 int require_full_body) {
+    return require_full_body
+               ? ph__http_body_response_complete(resp, resp_len)
+               : ph__http_send_response_complete(resp, resp_len);
 }
 
 #if defined(__APPLE__)
@@ -433,6 +440,8 @@ static int do_tls(const char *host, int port, const char *path, const char *body
         st = SSLRead(ctx, resp + resp_len, room, &got);
         resp_len += got;
         resp[resp_len] = '\0';
+        if (tls_response_complete(resp, resp_len, require_full_body))
+            break;
         if (st == errSSLClosedGraceful || st == errSSLClosedNoNotify ||
             st == errSSLClosedAbort)
             break;
@@ -549,6 +558,8 @@ static int do_tls(const char *host, int port, const char *path, const char *body
         if (n > 0) {
             resp_len += (size_t)n;
             resp[resp_len] = '\0';
+            if (tls_response_complete(resp, resp_len, require_full_body))
+                break;
             continue;
         }
         if (SSL_get_error(ssl, n) == SSL_ERROR_SYSCALL && errno == EINTR) continue;

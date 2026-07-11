@@ -583,6 +583,29 @@ int ph__http_send_response_complete(const char *resp, size_t resp_len) {
     return body_have >= PH_RESP_BODY_CAP - 1 || body_have > 0;
 }
 
+int ph__http_body_response_complete(const char *resp, size_t resp_len) {
+    const char *sep;
+    size_t head_len, body_have;
+    long content_len;
+
+    if (!resp) return 0;
+    sep = find_header_end(resp, resp_len);
+    if (!sep) return 0;
+
+    head_len = (size_t)(sep - resp);
+    body_have = resp_len - (size_t)((sep + 4) - resp);
+
+    if (scan_transfer_chunked(resp, head_len)) {
+        int chunk_rc = decode_chunked_full(sep + 4, body_have, NULL, 0, NULL);
+        return chunk_rc != 0;
+    }
+
+    content_len = scan_content_length(resp, head_len);
+    if (content_len >= 0) return body_have >= (size_t)content_len;
+
+    return 0;
+}
+
 /* Response-buffer sizes: the status-only path needs room for the status line,
  * headers, and the small quota-notice prefix; the body path reads in chunks. */
 #define PH_HTTP_STATUS_BUF 4096

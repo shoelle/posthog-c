@@ -56,8 +56,12 @@ static void test_fetch_response_body(void) {
     char out[32];
     const char *length =
         "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"x\":1}";
+    const char *length_partial =
+        "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n{\"x\"";
     const char *length_short =
         "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"x\":1}";
+    const char *length_empty =
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
     const char *length_large =
         "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n1234567";
     const char *chunked =
@@ -85,6 +89,16 @@ static void test_fetch_response_body(void) {
                                         sizeof out) == PH_HTTP_RESPONSE_TRUNCATED);
     CHECK(ph__http_decode_response_body(length_large, strlen(length_large), out,
                                         7) == PH_HTTP_RESPONSE_TOO_LARGE);
+
+    CHECK(!ph__http_body_response_complete(length_partial,
+                                           strlen(length_partial)));
+    CHECK(ph__http_body_response_complete(length, strlen(length)));
+    CHECK(ph__http_body_response_complete(length_empty, strlen(length_empty)));
+    CHECK(ph__http_body_response_complete(chunked, strlen(chunked)));
+    CHECK(!ph__http_body_response_complete(chunked_short,
+                                           strlen(chunked_short)));
+    CHECK(!ph__http_body_response_complete(close_delimited,
+                                           strlen(close_delimited)));
 }
 
 static void test_send_response_meta(void) {
