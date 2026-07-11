@@ -170,7 +170,10 @@ void suite_capture(void) {
         init_test_sdk();
         mock_set_status(500);
         ph_capture("will_fail", NULL);
-        ph_flush(2000);
+        /* 3 retries with exponential backoff (~700ms) before the batch settles;
+         * a generous flush budget so a slow CI runner doesn't race the window
+         * (ph_flush returns as soon as the sender is idle, so this is free). */
+        ph_flush(10000);
         CHECK(mock_batch_count() == 4); /* initial try + default 3 retries */
         ph_shutdown();
     }

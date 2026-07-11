@@ -213,12 +213,15 @@ static void test_quota_replay_drops_delivered_keeps_rest(void) {
     mock_reset();
     mock_install();
 
-    /* Spill two separate batches by failing their sends. */
+    /* Spill two separate batches by failing their sends. Each failed send runs
+     * 3 retries with exponential backoff (~700ms) before it spills, so the flush
+     * budget is generous - a slow CI runner otherwise races the window (ph_flush
+     * returns as soon as the sender is idle, so the headroom is free). */
     mock_set_status(500);
     ph_capture("replay_first", NULL);
-    ph_flush(2000);
+    ph_flush(10000);
     ph_capture("replay_second", NULL);
-    ph_flush(2000);
+    ph_flush(10000);
 
     /* Replay against a server that quota-limits: the first line is accepted
      * (200) and arms the hold, so it is dropped and replay stops; the second,

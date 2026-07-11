@@ -75,6 +75,12 @@ void suite_offline(void) {
     ph_config cfg;
     char *content;
     size_t clen;
+    /* Drain budget for every ph_flush below. Flush returns the instant the
+     * sender goes idle, so this only bounds the wait - it must clear the
+     * worst-case retry backoff (~700ms for the default 3 retries) with wide
+     * margin. A tight 2s budget raced that backoff and flaked the offline
+     * retry-count checks on a slow macOS CI runner. */
+    const int FLUSH_MS = 10000;
 
     temp_dir(dir, sizeof(dir));
     snprintf(path, sizeof(path), "%s/%s", dir, PH_OFFLINE_FILENAME);
@@ -96,7 +102,7 @@ void suite_offline(void) {
     /* --- offline: the send fails, so the batch spills to disk --- */
     mock_set_status(500);
     ph_capture("offline_ev", NULL);
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK(mock_batch_count() == 4); /* initial failed attempt + default 3 retries */
     content = read_file(path, &clen);
     CHECK_MSG(content != NULL && clen > 0, "expected a non-empty spill file");
@@ -109,7 +115,7 @@ void suite_offline(void) {
 
     /* --- reconnect: the next drain replays the spilled batch --- */
     mock_reset(); /* clears bodies; status back to 200 */
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK(mock_batch_count() >= 1);
     CHECK_CONTAINS(mock_batch(0), "offline_ev");
     CHECK(atomic_load(&g_ph.st_sent) == 1); /* replay delivery is accounted */
@@ -125,7 +131,7 @@ void suite_offline(void) {
     /* (a) torn-only file: nothing valid to send; the file must be discarded. */
     mock_reset();
     write_file(path, "{\"batch\":\"torn_only\""); /* note: no trailing '\n' */
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(!any_batch_contains("torn_only"),
               "a torn (unterminated) spill line must not be POSTed");
     content = read_file(path, &clen);
@@ -137,7 +143,7 @@ void suite_offline(void) {
      * torn tail is dropped, and the file drains clean. */
     mock_reset();
     write_file(path, "{\"batch\":\"good_line\"}\n{\"batch\":\"torn_tail\"");
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(any_batch_contains("good_line"),
               "the complete record before a torn tail must still replay");
     CHECK_MSG(!any_batch_contains("torn_tail"),
@@ -153,7 +159,7 @@ void suite_offline(void) {
     mock_reset();
     mock_set_status(400);
     ph_capture("client_err_ev", NULL);
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(mock_batch_count() == 1, "a 4xx must not be retried");
     content = read_file(path, &clen);
     CHECK_MSG(content == NULL || clen == 0, "a 4xx batch must be dropped, not spilled");
@@ -165,7 +171,7 @@ void suite_offline(void) {
     mock_reset();
     mock_set_status(408);
     ph_capture("request_timeout_ev", NULL);
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(mock_batch_count() == 4, "a 408 must be retried like a timeout");
     content = read_file(path, &clen);
     CHECK_MSG(content != NULL && clen > 0, "a 408 batch must spill after retries");
@@ -181,7 +187,7 @@ void suite_offline(void) {
     mock_reset();
     mock_set_status(400);
     write_file(path, "{\"batch\":\"poison_a\"}\n{\"batch\":\"poison_b\"}\n");
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(any_batch_contains("poison_a") && any_batch_contains("poison_b"),
               "replay must continue past a 4xx-rejected record, not stop on it");
     content = read_file(path, &clen);
@@ -194,7 +200,7 @@ void suite_offline(void) {
     mock_reset();
     mock_set_status(408);
     write_file(path, "{\"batch\":\"timeout_a\"}\n{\"batch\":\"timeout_b\"}\n");
-    ph_flush(2000);
+    ph_flush(FLUSH_MS);
     CHECK_MSG(mock_batch_count() == 1,
               "replay must stop on 408 after the first attempted record");
     content = read_file(path, &clen);
@@ -230,7 +236,7 @@ void suite_offline(void) {
         mock_install();
         mock_set_status(500);
         ph_capture("spill_must_fail", NULL);
-        ph_flush(2000);
+        ph_flush(FLUSH_MS);
         CHECK_MSG(atomic_load(&g_ph.st_failed) == 1,
                   "expected st_failed=1, got %llu",
                   (unsigned long long)atomic_load(&g_ph.st_failed));
