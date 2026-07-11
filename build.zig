@@ -48,7 +48,13 @@ const test_sources = [_][]const u8{
     "tests/test_crash.c",
 };
 
-fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget) void {
+// `final_link` is true for executables (a real link step) and false for the
+// static library. OpenSSL is linked only on a final binary: folding it into the
+// static archive embeds libssl.so/libcrypto.so as archive members, which LLD
+// warns about (harmless, but noisy). A downstream consumer of the static lib
+// links -lssl/-lcrypto itself - the standard contract for a static library with
+// a third-party shared dependency (see "Using it" in README.md).
+fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, final_link: bool) void {
     const m = step.root_module;
     switch (target.result.os.tag) {
         .windows => {
@@ -58,12 +64,15 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
         },
         // Linux: dl for dladdr (signal_crash module lookup); pthread for the
         // sender thread. glibc backtrace() lives in libc. ssl/crypto are the
-        // system OpenSSL, the HTTPS backend in ph_tls.c (needs libssl-dev).
+        // system OpenSSL (the HTTPS backend in ph_tls.c; needs libssl-dev),
+        // linked only on the final binary - see the note above.
         .linux => {
             m.linkSystemLibrary("pthread", .{});
             m.linkSystemLibrary("dl", .{});
-            m.linkSystemLibrary("ssl", .{});
-            m.linkSystemLibrary("crypto", .{});
+            if (final_link) {
+                m.linkSystemLibrary("ssl", .{});
+                m.linkSystemLibrary("crypto", .{});
+            }
         },
         // macOS: Secure Transport (Security.framework) for TLS in ph_tls.c;
         // CoreFoundation for CFRelease of the SSL context. pthread is in libc.
@@ -147,7 +156,7 @@ fn create(
     lib.root_module.addIncludePath(b.path("third_party/sdefl"));
     lib.root_module.addCSourceFiles(.{ .files = &c_sources, .flags = &c_flags });
     lib.root_module.addCSourceFiles(.{ .files = &.{"src/ph_gzip.c"}, .flags = &gzip_flags });
-    linkPlatform(lib, target);
+    linkPlatform(lib, target, false); // static archive: no third-party OpenSSL
     return lib;
 }
 
@@ -178,7 +187,7 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addIncludePath(b.path("src"));
     tests.root_module.addCSourceFiles(.{ .files = &test_sources, .flags = &c_flags });
     tests.root_module.linkLibrary(lib);
-    linkPlatform(tests, target);
+    linkPlatform(tests, target, true);
 
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Build and run the test suite");
@@ -209,7 +218,7 @@ pub fn build(b: *std.Build) void {
             fz.root_module.addIncludePath(b.path("tests/fuzz"));
             fz.root_module.addCSourceFiles(.{ .files = &.{ "tests/fuzz/fuzz_run.c", src }, .flags = &c_flags });
             fz.root_module.linkLibrary(lib);
-            linkPlatform(fz, target);
+            linkPlatform(fz, target, true);
             const run_fz = b.addRunArtifact(fz);
             run_fz.addArg("50000"); // bounded iterations for a repeatable check
             fuzz_step.dependOn(&run_fz.step);
@@ -228,7 +237,7 @@ pub fn build(b: *std.Build) void {
     addIncludes(b, example);
     example.root_module.addCSourceFiles(.{ .files = &.{"examples/quickstart.c"}, .flags = &c_flags });
     example.root_module.linkLibrary(lib);
-    linkPlatform(example, target);
+    linkPlatform(example, target, true);
     b.installArtifact(example);
 
     const run_example = b.addRunArtifact(example);
@@ -248,7 +257,7 @@ pub fn build(b: *std.Build) void {
     addIncludes(b, example_cpp);
     example_cpp.root_module.addCSourceFiles(.{ .files = &.{"examples/quickstart.cpp"}, .flags = &.{ "-std=c++17", "-Wall", "-Wextra" } });
     example_cpp.root_module.linkLibrary(lib);
-    linkPlatform(example_cpp, target);
+    linkPlatform(example_cpp, target, true);
     b.installArtifact(example_cpp);
 
     const run_example_cpp = b.addRunArtifact(example_cpp);
@@ -266,7 +275,7 @@ pub fn build(b: *std.Build) void {
     addIncludes(b, live);
     live.root_module.addCSourceFiles(.{ .files = &.{"tests/live_contract.c"}, .flags = &c_flags });
     live.root_module.linkLibrary(lib);
-    linkPlatform(live, target);
+    linkPlatform(live, target, true);
     b.step("live-contract-compile", "Compile the opt-in live PostHog contract test")
         .dependOn(&live.step);
     const run_live = b.addRunArtifact(live);

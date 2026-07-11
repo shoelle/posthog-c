@@ -119,8 +119,14 @@ Add posthog-c as a Zig dependency:
 ```zig
 // your build.zig
 const ph = b.dependency("posthog_c", .{ .target = target, .optimize = optimize });
-exe.linkLibrary(ph.artifact("posthog")); // static lib; carries its own platform libs
-exe.addIncludePath(ph.path("include"));  // <posthog.h> / <posthog.hpp>
+exe.root_module.linkLibrary(ph.artifact("posthog")); // static lib; bundles its OS libs
+exe.root_module.addIncludePath(ph.path("include"));  // <posthog.h> / <posthog.hpp>
+// Linux: link the system OpenSSL (libssl-dev) yourself - the SDK leaves its one
+// third-party shared dependency to your final binary.
+if (target.result.os.tag == .linux) {
+    exe.root_module.linkSystemLibrary("ssl", .{});
+    exe.root_module.linkSystemLibrary("crypto", .{});
+}
 ```
 
 The native SDK owns threads and mutexes and is not fork-safe after `ph_init()`.
