@@ -2,7 +2,7 @@
 
 This is an **unofficial** small, embeddable **PostHog SDK** for C and C++.
 
-> **Status:** pre-1.0, lightly tested on Windows.
+> **Status:** pre-1.0. Built and tested on Windows, macOS, and Linux in CI, including a live end-to-end test that delivers a real event over each platform's TLS backend.
 
 **What it's for:** Native apps that can't take a telemetry stall on a hot thread - game engines, audio and creative tools, desktop and embedded software. `ph_capture()` copies your event into a fixed-size ring and returns; on the calling thread it never allocates, reads the wall clock, uses RNG, or touches the network. Serialization, gzip, HTTP, and retries all run on a background sender thread. That guarantee is the reason this exists instead of a few lines of `curl` against PostHog's HTTP API.
 
@@ -23,7 +23,7 @@ This is a source-distributed SDK: compile it and its headers with your applicati
 ph_config cfg;
 ph_config_defaults(&cfg);
 cfg.api_key = "phc_your_project_key";
-cfg.api_host = "http://localhost:8000"; // dev proxy (http); or https://us.i.posthog.com on Windows
+cfg.api_host = "http://localhost:8000"; // dev proxy (http); or https://us.i.posthog.com
 cfg.distinct_id = "install-id-from-your-storage"; // create once and persist
 ph_init(&cfg);
 
@@ -96,6 +96,12 @@ run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or
 `scripts/live-contract.sh` elsewhere. HTTPS delivery works on all three desktops
 - WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux, needs `libssl-dev`).
 
+CI runs this same live contract on Windows, macOS, and Linux on every push to
+`main`, so each TLS backend is exercised end to end against a real project - not
+just compiled. The build and mock-transport suite run on all three platforms on
+every push; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the
+WASM parity harness run on Linux.
+
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
 
 ### Using it
@@ -123,7 +129,9 @@ process that will emit events; do not call the inherited instance in the child.
 
 ## Roadmap
 
-TODO: Linux/macOS support. See [TODO.md](TODO.md) for more.
+Cross-platform TLS (Windows/macOS/Linux), feature flags, offline spill, and
+signal-crash capture are in. Next: out-of-process crash handling with
+server-side symbolication, and crash-time timestamps. See [TODO.md](TODO.md).
 
 ## License
 

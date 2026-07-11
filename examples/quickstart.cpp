@@ -14,7 +14,7 @@ int main() {
     ph_config cfg;
     ph_config_defaults(&cfg);
     cfg.api_key = "phc_your_project_key";
-    cfg.api_host = "http://localhost:8000"; // dev proxy; or https://us.i.posthog.com on Windows
+    cfg.api_host = "http://localhost:8000"; // dev proxy; or https://us.i.posthog.com
     cfg.distinct_id = "install-id-from-your-storage"; // create once + persist in app settings
     cfg.release = "quickstart-cpp@0.1.0";
 

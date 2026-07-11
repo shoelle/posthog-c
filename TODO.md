@@ -19,8 +19,8 @@ library: WinHTTP (Windows), Secure Transport (macOS, `#if __APPLE__`), and the
 system OpenSSL (Linux, `libssl-dev`). All verify the server cert chain and
 hostname against the OS trust store. The socket, HTTP framing, and response
 parser are shared across the POSIX backends; only the handshake/read/write
-differs. The live-contract workflow runs on all three runners, so a push
-delivers a real event over each backend and proves them end to end.
+differs. The live-contract job runs on all three CI runners, so a push delivers
+a real event over each backend and proves them end to end.
 
 Remaining:
 - **Other Unix (the BSDs)** has no backend - `ph_tls_available()` returns 0 and

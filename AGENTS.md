@@ -107,7 +107,10 @@ shim. Every module ships coverage in `tests/`; add a test in the same change as
 new behavior. The suite is one executable of counting-assert macros
 (`tests/test_util.h`), with a capturing mock transport (`tests/mock_transport.c`)
 so capture tests assert exact batch bytes without a socket. Prefer the serializer
-or the mock over a live server.
+or the mock over a live server. The one sanctioned live-server test is the opt-in
+`zig build live-contract` (needs a disposable `POSTHOG_API_KEY`); CI runs it on
+Windows, macOS, and Linux on pushes to `main`, exercising each TLS backend
+(WinHTTP / Secure Transport / OpenSSL) end to end.
 
 ## Review priorities
 
