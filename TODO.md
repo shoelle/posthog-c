@@ -12,9 +12,24 @@
 remaining work is to decide whether an opt-in SDK health event should send that
 snapshot to PostHog itself, and to close the accounting gaps listed above.
 
-## Linux/macOS TLS
+## TLS
 
-macOS now has a Secure Transport backend (`ph_tls.c`, `#if __APPLE__`): it verifies the cert chain + hostname against the system trust store. The C compiles cross-target; the framework link and real handshake still need validation on a Mac - the live-contract runs on Windows only today, so add a macOS leg to exercise it. Linux is still stubbed (`ph_tls_send`/`ph_tls_fetch` return `-1`); vendored BearSSL is next, and it needs system CA trust anchors. See the TLS-library tradeoff in DESIGN.md.
+Each desktop links its own system TLS stack rather than vendoring a crypto
+library: WinHTTP (Windows), Secure Transport (macOS, `#if __APPLE__`), and the
+system OpenSSL (Linux, `libssl-dev`). All verify the server cert chain and
+hostname against the OS trust store. The socket, HTTP framing, and response
+parser are shared across the POSIX backends; only the handshake/read/write
+differs. The live-contract workflow runs on all three runners, so a push
+delivers a real event over each backend and proves them end to end.
+
+Remaining:
+- **Other Unix (the BSDs)** has no backend - `ph_tls_available()` returns 0 and
+  https:// is refused. Wire OpenSSL (or LibreSSL) there too if it ever matters.
+- **macOS Secure Transport is deprecated** in favour of Network.framework. It
+  works, but a future migration would silence the deprecation and gain async IO.
+- **Linux ships a hard OpenSSL dependency.** Fine for a Linux SDK (it's the
+  de-facto system TLS), but a vendored/optional backend would suit a
+  no-dependencies embed; left as a deliberate trade, not an oversight.
 
 ## Deliberately out of scope (don't re-litigate)
 

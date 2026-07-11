@@ -23,7 +23,7 @@ Identity and super-properties are baked into each event at capture, so the sende
 
 - **C11 core + header-only C++ wrapper** - maximally embeddable, FFI-friendly, no C++ runtime dependency.
 - **Zig build**, with the sources exposed so a CMake shim can wrap them later.
-- **TLS per platform**: WinHTTP today; macOS (Secure Transport) and Linux (vendored BearSSL) pending.
+- **TLS per platform**: each desktop links its own system TLS - WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux) - rather than vendoring a crypto library.
 - **Fixed per-event property caps** (part of the `ph_props` ABI): a pathological event drops its overflow properties (and counts them) instead of ever allocating.
 - **Privacy**: anonymous by default; a `before_send` hook + a `property_denylist` scrub every event sender-side; a master `enabled` kill-switch makes the SDK a no-op.
 - **Backpressure**: the sender honors HTTP 429/503 `Retry-After` and PostHog's `200`-body quota notice, and a client-side token bucket caps what we emit in the first place.
@@ -36,4 +36,4 @@ A fatal native fault (POSIX signal / Windows SEH) is persisted as one fixed reco
 
 ## Status
 
-Native delivery + offline spill, the WASM bridge, feature flags, and error + crash capture are done; next is macOS/Linux TLS. Full roadmap and known limits live in [`TODO.md`](TODO.md).
+Native delivery + offline spill, the WASM bridge, feature flags, error + crash capture, and per-platform TLS (WinHTTP / Secure Transport / OpenSSL) are done. Full roadmap and known limits live in [`TODO.md`](TODO.md).

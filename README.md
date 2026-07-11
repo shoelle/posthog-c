@@ -93,7 +93,8 @@ zig build run-example  # run the C quickstart
 reads a flag against a live project, so it needs `POSTHOG_API_KEY` (use a
 disposable one). Copy [`.env.example`](.env.example) to `.env` (gitignored) and
 run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or
-`scripts/live-contract.sh` elsewhere. Real HTTPS delivery is Windows-only today.
+`scripts/live-contract.sh` elsewhere. HTTPS delivery works on all three desktops
+- WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux, needs `libssl-dev`).
 
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
 

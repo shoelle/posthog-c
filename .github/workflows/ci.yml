@@ -6,9 +6,9 @@ on:
   pull_request:
 
 jobs:
-  # Native build + tests on all three desktop platforms. Windows exercises the
-  # WinHTTP TLS path; Linux/macOS confirm the pthreads + POSIX-sockets paths
-  # compile and the suite is green (tests use the mock transport, no network).
+  # Native build + tests on all three desktop platforms. Each links its own
+  # system TLS (WinHTTP / Secure Transport / OpenSSL); the suite itself uses the
+  # mock transport (no network), so this proves the transports compile and link.
   native:
     strategy:
       fail-fast: false
@@ -20,6 +20,9 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      - name: Install OpenSSL headers (Linux TLS backend)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y libssl-dev
       - name: Build
         run: zig build
       - name: Test
@@ -34,13 +37,15 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      - name: Install OpenSSL headers (Linux TLS backend)
+        run: sudo apt-get install -y libssl-dev
       - name: ASan + UBSan
         shell: bash
         run: |
           zig cc -std=c11 -D_GNU_SOURCE -fsanitize=address,undefined -fno-omit-frame-pointer \
             -Iinclude -Isrc -Ithird_party/sdefl \
             src/*.c tests/test_*.c tests/mock_transport.c \
-            -lpthread -ldl -o posthog_tests_san
+            -lpthread -ldl -lssl -lcrypto -o posthog_tests_san
           ./posthog_tests_san
 
   fuzz:
@@ -50,6 +55,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      - name: Install OpenSSL headers (Linux TLS backend)
+        run: sudo apt-get install -y libssl-dev
       - name: Bounded parser fuzz
         run: zig build -Doptimize=ReleaseSafe fuzz
 
@@ -60,6 +67,8 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
+      - name: Install OpenSSL headers (Linux TLS backend)
+        run: sudo apt-get install -y libssl-dev
       - name: Build as a downstream Zig dependency
         working-directory: tests/consumer
         run: zig build run

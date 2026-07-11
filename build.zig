@@ -57,10 +57,13 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget)
             m.linkSystemLibrary("bcrypt", .{}); // OS entropy for UUID/reset-id salt
         },
         // Linux: dl for dladdr (signal_crash module lookup); pthread for the
-        // sender thread. glibc backtrace() lives in libc.
+        // sender thread. glibc backtrace() lives in libc. ssl/crypto are the
+        // system OpenSSL, the HTTPS backend in ph_tls.c (needs libssl-dev).
         .linux => {
             m.linkSystemLibrary("pthread", .{});
             m.linkSystemLibrary("dl", .{});
+            m.linkSystemLibrary("ssl", .{});
+            m.linkSystemLibrary("crypto", .{});
         },
         // macOS: Secure Transport (Security.framework) for TLS in ph_tls.c;
         // CoreFoundation for CFRelease of the SSL context. pthread is in libc.

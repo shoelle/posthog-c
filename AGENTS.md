@@ -32,7 +32,7 @@ src/ph_serialize.c       event record -> /batch/ JSON  (parity-critical, pure)
 src/ph_jsonval.c         minimal JSON *parser* (DOM) - used only to read /flags/
 src/ph_flags.c           feature flags: /flags/ fetch, cache, accessors, $feature_flag_called
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
-src/ph_tls.c             HTTPS via WinHTTP (Windows); BearSSL for Linux/macOS is next
+src/ph_tls.c             HTTPS via system TLS: WinHTTP / Secure Transport / OpenSSL
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
 src/ph_ratelimit.{h,c}   server-backpressure hold (429/Retry-After + PostHog quota) - pure, unit-tested
 src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a persisted $exception replayed next run

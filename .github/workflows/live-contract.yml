@@ -9,13 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  # Real HTTPS delivery to PostHog on every desktop platform - this is what
+  # actually exercises each TLS backend (WinHTTP / Secure Transport / OpenSSL)
+  # end to end. Each leg tags its event with the OS so the dashboard shows which
+  # transport delivered. A fork/clone has no POSTHOG_API_KEY and skips cleanly.
   contract:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     environment: posthog-live
     env:
       POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
       POSTHOG_HOST: ${{ vars.POSTHOG_HOST }}
-      POSTHOG_DISTINCT_ID: posthog-c-release-contract
+      POSTHOG_DISTINCT_ID: posthog-c-contract-${{ matrix.os }}
       POSTHOG_FLAG_KEY: ${{ vars.POSTHOG_FLAG_KEY }}
       POSTHOG_EXPECT_FLAG: ${{ vars.POSTHOG_EXPECT_FLAG }}
       POSTHOG_EXPECT_PAYLOAD: ${{ vars.POSTHOG_EXPECT_PAYLOAD }}
@@ -31,6 +39,9 @@ jobs:
             echo "go=false" >> "$GITHUB_OUTPUT"
             echo "::notice::POSTHOG_API_KEY not set; skipping the live contract."
           fi
+      - if: steps.gate.outputs.go == 'true' && runner.os == 'Linux'
+        name: Install OpenSSL (Linux TLS backend)
+        run: sudo apt-get install -y libssl-dev
       - if: steps.gate.outputs.go == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - if: steps.gate.outputs.go == 'true'

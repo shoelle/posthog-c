@@ -189,15 +189,15 @@ int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
                   NULL, 0, 1);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__linux__)
 
 /*
- * macOS/iOS: Secure Transport over a plain BSD socket. The cert chain is
- * verified against the system trust store and matched to the host by
- * SSLSetPeerDomainName (no BreakOnServerAuth override), so a bad or mismatched
- * cert fails the handshake. Secure Transport is deprecated in favour of
- * Network.framework, but it is the smallest synchronous C API for a sender
- * thread; the deprecation warnings are suppressed below.
+ * POSIX HTTPS: we own the TCP socket and the HTTP/1.1 framing; the platform's
+ * system TLS library owns the handshake and certificate verification. macOS
+ * uses Secure Transport, Linux links the system OpenSSL. Both verify the cert
+ * chain and match it to the host against the OS trust store, so a bad or
+ * mismatched certificate fails the handshake. The socket, request builder, and
+ * response parser below are shared; only the TLS read/write differs per backend.
  */
 #include "ph_http.h"     /* ph__http_parse_response_meta / decode + PH_HTTP_RESPONSE_* */
 #include "ph_internal.h" /* ph_send_meta, PH_HOST_CAP */
@@ -205,18 +205,13 @@ int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
 
 #include <errno.h>
 #include <netdb.h>
-#include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#include <CoreFoundation/CoreFoundation.h>
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#include <Security/SecureTransport.h>
 
 int ph_tls_available(void) { return 1; }
 
@@ -235,48 +230,6 @@ static void tls_sock_timeout(const tls_conn *tc) {
     tv.tv_usec = (ms % 1000) * 1000;
     setsockopt(tc->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(tc->fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-}
-
-/* Secure Transport IO callbacks. A short read/write (timeout) returns
- * errSSLWouldBlock so the caller re-checks the deadline and retries. */
-static OSStatus tls_read_cb(SSLConnectionRef c, void *data, size_t *len) {
-    const tls_conn *tc = (const tls_conn *)c;
-    size_t want = *len, got = 0;
-    tls_sock_timeout(tc);
-    while (got < want) {
-        ssize_t n = read(tc->fd, (char *)data + got, want - got);
-        if (n > 0) {
-            got += (size_t)n;
-            continue;
-        }
-        if (n == 0) {
-            *len = got;
-            return errSSLClosedGraceful;
-        }
-        if (errno == EINTR) continue;
-        *len = got;
-        return errSSLWouldBlock;
-    }
-    *len = got;
-    return noErr;
-}
-
-static OSStatus tls_write_cb(SSLConnectionRef c, const void *data, size_t *len) {
-    const tls_conn *tc = (const tls_conn *)c;
-    size_t want = *len, sent = 0;
-    tls_sock_timeout(tc);
-    while (sent < want) {
-        ssize_t n = write(tc->fd, (const char *)data + sent, want - sent);
-        if (n > 0) {
-            sent += (size_t)n;
-            continue;
-        }
-        if (n < 0 && errno == EINTR) continue;
-        *len = sent;
-        return errSSLWouldBlock;
-    }
-    *len = want;
-    return noErr;
 }
 
 /* Connect a TCP socket to host:port within the deadline, or -1. */
@@ -327,6 +280,87 @@ static void tls_build_request(ph_strbuf *out, const char *host, int port,
     ph_strbuf_append_cstr(out, line);
     ph_strbuf_append_cstr(out, "Connection: close\r\n\r\n");
     ph_strbuf_append(out, body, body_len);
+}
+
+/* Turn a raw HTTP response into a status code, copying either the fully decoded
+ * body (fetch) or the Retry-After + body prefix (send) into the caller's
+ * buffers. Shared by both TLS backends. */
+static int tls_finish(const char *resp, size_t resp_len, int require_full_body,
+                      char *out, size_t out_cap, char *retry_after,
+                      size_t retry_after_cap) {
+    if (require_full_body)
+        return ph__http_decode_response_body(resp, resp_len, out, out_cap);
+    {
+        ph_send_meta meta;
+        int status;
+        memset(&meta, 0, sizeof meta);
+        status = ph__http_parse_response_meta(resp, resp_len, &meta);
+        if (retry_after && retry_after_cap) {
+            strncpy(retry_after, meta.retry_after, retry_after_cap - 1);
+            retry_after[retry_after_cap - 1] = '\0';
+        }
+        if (out && out_cap) {
+            strncpy(out, meta.body, out_cap - 1);
+            out[out_cap - 1] = '\0';
+        }
+        return status;
+    }
+}
+
+#if defined(__APPLE__)
+
+/*
+ * macOS/iOS: Secure Transport over the shared BSD socket. The cert chain is
+ * matched to the host by SSLSetPeerDomainName (no BreakOnServerAuth override).
+ * Secure Transport is deprecated in favour of Network.framework, but it is the
+ * smallest synchronous C API for a sender thread; the warnings are suppressed.
+ */
+#include <CoreFoundation/CoreFoundation.h>
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#include <Security/SecureTransport.h>
+
+/* Secure Transport IO callbacks. A short read/write (timeout) returns
+ * errSSLWouldBlock so the caller re-checks the deadline and retries. */
+static OSStatus tls_read_cb(SSLConnectionRef c, void *data, size_t *len) {
+    const tls_conn *tc = (const tls_conn *)c;
+    size_t want = *len, got = 0;
+    tls_sock_timeout(tc);
+    while (got < want) {
+        ssize_t n = read(tc->fd, (char *)data + got, want - got);
+        if (n > 0) {
+            got += (size_t)n;
+            continue;
+        }
+        if (n == 0) {
+            *len = got;
+            return errSSLClosedGraceful;
+        }
+        if (errno == EINTR) continue;
+        *len = got;
+        return errSSLWouldBlock;
+    }
+    *len = got;
+    return noErr;
+}
+
+static OSStatus tls_write_cb(SSLConnectionRef c, const void *data, size_t *len) {
+    const tls_conn *tc = (const tls_conn *)c;
+    size_t want = *len, sent = 0;
+    tls_sock_timeout(tc);
+    while (sent < want) {
+        ssize_t n = write(tc->fd, (const char *)data + sent, want - sent);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        *len = sent;
+        return errSSLWouldBlock;
+    }
+    *len = want;
+    return noErr;
 }
 
 static int do_tls(const char *host, int port, const char *path, const char *body,
@@ -406,21 +440,8 @@ static int do_tls(const char *host, int port, const char *path, const char *body
         if (st != noErr) break;
     }
 
-    if (require_full_body) {
-        status = ph__http_decode_response_body(resp, resp_len, out, out_cap);
-    } else {
-        ph_send_meta meta;
-        memset(&meta, 0, sizeof meta);
-        status = ph__http_parse_response_meta(resp, resp_len, &meta);
-        if (retry_after && retry_after_cap) {
-            strncpy(retry_after, meta.retry_after, retry_after_cap - 1);
-            retry_after[retry_after_cap - 1] = '\0';
-        }
-        if (out && out_cap) {
-            strncpy(out, meta.body, out_cap - 1);
-            out[out_cap - 1] = '\0';
-        }
-    }
+    status = tls_finish(resp, resp_len, require_full_body, out, out_cap,
+                        retry_after, retry_after_cap);
 
 done:
     if (ctx) {
@@ -433,6 +454,122 @@ done:
 }
 
 #pragma clang diagnostic pop
+
+#else /* __linux__: system OpenSSL (links libssl/libcrypto) */
+
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+
+static int do_tls(const char *host, int port, const char *path, const char *body,
+                  size_t body_len, int timeout_ms, char *out, size_t out_cap,
+                  const char *content_encoding, char *retry_after,
+                  size_t retry_after_cap, int require_full_body) {
+    uint64_t deadline = tls_deadline(timeout_ms);
+    tls_conn tc;
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+    ph_strbuf req;
+    char *resp = NULL;
+    size_t resp_len = 0, resp_cap;
+    size_t sent = 0;
+    int status = -1;
+
+    if (out && out_cap) out[0] = '\0';
+    if (retry_after && retry_after_cap) retry_after[0] = '\0';
+
+    tc.fd = tls_connect(host, port, deadline);
+    if (tc.fd < 0) return -1;
+    tc.deadline = deadline;
+
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) goto done;
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    /* Verify the chain against the system trust store; combined with SSL_set1_host
+     * below, a bad chain or a hostname mismatch then fails SSL_connect. */
+    if (SSL_CTX_set_default_verify_paths(ctx) != 1) goto done;
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+
+    ssl = SSL_new(ctx);
+    if (!ssl) goto done;
+    SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    if (SSL_set1_host(ssl, host) != 1) goto done;        /* hostname to verify */
+    if (SSL_set_tlsext_host_name(ssl, host) != 1) goto done; /* SNI */
+    if (SSL_set_fd(ssl, tc.fd) != 1) goto done;
+
+    for (;;) {
+        int rc;
+        tls_sock_timeout(&tc);
+        rc = SSL_connect(ssl);
+        if (rc == 1) break; /* handshake + certificate + hostname verified */
+        if (SSL_get_error(ssl, rc) == SSL_ERROR_SYSCALL && errno == EINTR &&
+            (!deadline || tls_remaining_ms(deadline) > 0))
+            continue;
+        goto done; /* handshake, certificate, or hostname verification failed */
+    }
+
+    ph_strbuf_init(&req);
+    tls_build_request(&req, host, port, path, body, body_len, content_encoding);
+    if (req.oom) {
+        ph_strbuf_free(&req);
+        goto done;
+    }
+    {
+        int send_ok = 1;
+        tls_sock_timeout(&tc);
+        while (sent < req.len) {
+            size_t left = req.len - sent;
+            int chunk = left > INT_MAX ? INT_MAX : (int)left;
+            int n = SSL_write(ssl, req.data + sent, chunk);
+            if (n > 0) {
+                sent += (size_t)n;
+                continue;
+            }
+            if (SSL_get_error(ssl, n) == SSL_ERROR_SYSCALL && errno == EINTR &&
+                (!deadline || tls_remaining_ms(deadline) > 0)) {
+                tls_sock_timeout(&tc);
+                continue;
+            }
+            send_ok = 0;
+            break;
+        }
+        ph_strbuf_free(&req);
+        if (!send_ok) goto done;
+    }
+
+    resp_cap = require_full_body ? out_cap + 32768 : 8192;
+    resp = (char *)malloc(resp_cap + 1);
+    if (!resp) goto done;
+    for (;;) {
+        size_t room = resp_cap - resp_len;
+        int n;
+        if (room == 0) break;
+        if (deadline && tls_remaining_ms(deadline) <= 0) break;
+        tls_sock_timeout(&tc);
+        n = SSL_read(ssl, resp + resp_len, room > INT_MAX ? INT_MAX : (int)room);
+        if (n > 0) {
+            resp_len += (size_t)n;
+            resp[resp_len] = '\0';
+            continue;
+        }
+        if (SSL_get_error(ssl, n) == SSL_ERROR_SYSCALL && errno == EINTR) continue;
+        break; /* clean close (ZERO_RETURN), timeout, or error - stop reading */
+    }
+
+    status = tls_finish(resp, resp_len, require_full_body, out, out_cap,
+                        retry_after, retry_after_cap);
+
+done:
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+    }
+    if (ctx) SSL_CTX_free(ctx);
+    if (tc.fd >= 0) close(tc.fd);
+    free(resp);
+    return status;
+}
+
+#endif /* backend select */
 
 int ph_tls_send(const char *host, int port, const char *path, const char *body,
                 size_t body_len, int timeout_ms, const char *content_encoding,
@@ -448,7 +585,7 @@ int ph_tls_fetch(const char *host, int port, const char *path, const char *body,
                   NULL, 0, 1);
 }
 
-#else /* Linux/other: TLS backend not yet vendored (BearSSL is the next step) */
+#else /* other platforms: no system TLS backend wired up yet */
 
 int ph_tls_available(void) { return 0; }
 

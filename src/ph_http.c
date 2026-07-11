@@ -702,7 +702,7 @@ static int do_http(const char *url, const char *body, size_t body_len,
     if (out && out_cap) out[0] = '\0';
     if (parse_url(url, &u) != PH_OK) return -1;
 
-    /* https delegates to the TLS backend (WinHTTP on Windows). */
+    /* https delegates to the system TLS backend in ph_tls.c. */
     if (u.is_https)
         return out ? ph_tls_fetch(u.host, atoi(u.port), u.path, body, body_len,
                                   timeout_ms, out, out_cap)

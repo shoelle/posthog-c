@@ -1,11 +1,11 @@
 /*
  * ph_tls.h - the HTTPS side of the native transport (v0.2).
  *
- * https:// URLs route here from ph_http.c. On Windows we reuse WinHTTP, which
- * is always present and validates the server certificate against the OS trust
- * store - so on Windows we "reuse what the host has" rather than shipping a
- * second TLS stack. macOS (Secure Transport) and Linux (a vendored BearSSL)
- * backends slot in behind this same call; until then they return an error.
+ * https:// URLs route here from ph_http.c. Each platform reuses its own system
+ * TLS stack rather than shipping a second one: WinHTTP (Windows), Secure
+ * Transport (macOS), and the system OpenSSL (Linux). All validate the server
+ * certificate chain and hostname against the OS trust store. A platform with no
+ * backend wired up reports ph_tls_available() == 0, and https:// is refused.
  */
 #ifndef PH_TLS_H
 #define PH_TLS_H

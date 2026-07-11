@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 # Load .env (gitignored) and run the opt-in live PostHog contract test.
 # Requires a .env with POSTHOG_API_KEY (copy from .env.example).
-# Real HTTPS delivery is Windows-only today (WinHTTP); on Linux/macOS point
-# POSTHOG_HOST at a plaintext http:// proxy until the TLS backends land.
+# HTTPS works on all three desktops: WinHTTP (Windows), Secure Transport (macOS),
+# OpenSSL (Linux). POSTHOG_HOST may also be a plaintext http:// endpoint.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
