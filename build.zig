@@ -282,6 +282,22 @@ pub fn build(b: *std.Build) void {
     b.step("live-contract", "Run the opt-in live contract (requires POSTHOG_API_KEY)")
         .dependOn(&run_live.step);
 
+    // -- Pinned posthog-js host contract: `zig build test-wasm-host` ------
+    // Kept separate from the fast mock WASM harness: CI installs the exact
+    // npm dependency in this fixture before invoking the step.
+    const test_wasm_host_step = b.step(
+        "test-wasm-host",
+        "Test the WASM host finalizer against pinned posthog-js",
+    );
+    if (findNode(b)) |node_path| {
+        const run_wasm_host = b.addSystemCommand(&.{node_path});
+        run_wasm_host.addFileArg(b.path("tests/wasm/host-contract/contract.mjs"));
+        test_wasm_host_step.dependOn(&run_wasm_host.step);
+    } else {
+        const fail = b.addFail("test-wasm-host requires Node");
+        test_wasm_host_step.dependOn(&fail.step);
+    }
+
     // -- WASM backend: `zig build test-wasm` -----------------------------
     // Compiles the public WASM recipe in strict C11, then runs the full Node
     // behavioral harness against both an ordinary and Closure-optimized build.

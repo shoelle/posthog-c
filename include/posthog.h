@@ -3,11 +3,12 @@
  *
  * A small, embeddable PostHog client for C/C++ applications. Built so
  * ph_capture() is safe to call from a hot thread (a game/render/audio loop):
- * it copies into a bounded ring and returns without allocating, blocking,
- * reading the wall clock, or hitting the network on the caller. One C
- * interface, two compile-time transports: `native` (owns HTTP + a background
- * sender thread + an on-disk offline queue) and `wasm` (a thin shim over the
- * browser's already-loaded `window.posthog`). Callers never see the split.
+ * native capture copies into a bounded ring without allocation, wall-clock/RNG
+ * work, disk, or network on the caller; it does read the monotonic clock and
+ * take SDK/queue mutexes. One C interface, two compile-time transports:
+ * `native` (owns HTTP + a background sender thread + an on-disk offline queue)
+ * and `wasm` (a synchronous shim over a helper-initialized posthog-js client).
+ * Callers never see the split.
  *
  * Native rides PostHog's documented raw ingestion API (`/batch/`, `/flags/`).
  * WASM intentionally delegates to a host-loaded posthog-js instance.
@@ -152,7 +153,9 @@ ph_result ph_props_set_bool(ph_props *p, const char *key, int val);
  * Runs before serialization for capture and control events. Native events run
  * on the sender thread except exceptions, which scrub before enqueue so
  * structured exception text can be redacted before $exception_list is built.
- * WASM runs the hook synchronously on the caller thread before posthog-js.
+ * WASM runs the hook synchronously on the caller thread before posthog-js adds
+ * browser properties. Use wasm/posthog-c-host.mjs final_before_send or
+ * final_property_denylist when automatic browser enrichment must be reviewed.
  * Mutate `props` in place to redact, or return 0 to drop the event entirely.
  * Return nonzero to keep it. `event` is the event name. `user` is
  * ph_config.user_data. NULL hook = pass-through.
@@ -203,7 +206,8 @@ typedef struct ph_config {
                                * + event data (0600 on POSIX; inherited ACL on
                                * Windows). Use one SDK process per directory and
                                * protect the parent directory. */
-    const char *release;      /* e.g. "myapp@1.2.3" - tags every event */
+    const char *release;      /* e.g. "myapp@1.2.3" - optional enrichment;
+                               * denylist/final host scrubbers may remove it */
 
     int enabled;         /* master switch; 0 => every call is a no-op */
     int person_profiles; /* ph_person_profiles (default PH_IDENTIFIED_ONLY) */
@@ -212,8 +216,8 @@ typedef struct ph_config {
     int preload_flags;            /* fetch flags during ph_init (default 1) */
     int disable_geoip;            /* opt out of GeoIP enrichment for events and
                                    * feature-flag evaluation (default 0). Native
-                                   * applies this directly; wasm requires an
-                                   * equivalent host policy. */
+                                   * applies this directly; wasm requires the
+                                   * helper's acknowledged flags-proxy policy. */
 
     ph_before_send_fn before_send; /* scrubber; NULL = pass-through */
     ph_log_fn on_log;              /* diagnostics sink; NULL = silent */
@@ -282,8 +286,10 @@ typedef struct ph_exception {
 /* --- Lifecycle & capture ----------------------------------------- */
 
 /*
- * Initialize the global SDK instance. Copies config, adopts the host-persisted
- * distinct id, and starts the native sender thread. Returns PH_OK on success.
+ * Initialize the global SDK instance. Copies config and adopts the
+ * host-persisted distinct id; native starts its sender thread, while WASM
+ * validates and pins the helper-installed posthog-js host descriptor.
+ * Returns PH_OK on success.
  * Calling when already initialized returns PH_ERR. If cfg->enabled is 0, the
  * SDK initializes into a no-op state and every call below returns quietly.
  * Over-cap string configuration is rejected with PH_ERR_BADARG rather than
@@ -292,18 +298,21 @@ typedef struct ph_exception {
 ph_result ph_init(const ph_config *cfg);
 
 /*
- * Capture an event. Fire-and-forget: copies the event name and accepted
- * property values into the SDK-owned ring and returns. No JSON, no network,
- * no malloc on the caller thread. `props` may be NULL for a bare event.
- * Oversized keys/values are truncated; over-capacity events drop properties
- * and bump an internal counter rather than borrowing caller memory.
+ * Capture an event. Native copies the event name and accepted property values
+ * into its bounded ring: no JSON, network, wall clock, RNG, or allocation on
+ * the caller thread (it does read the monotonic clock and take SDK/queue
+ * mutexes). WASM synchronously serializes and calls posthog-js, so it may
+ * allocate and run both scrubber stages. `props` may be NULL for a bare event.
+ * Oversized keys/values are truncated; native over-capacity events drop
+ * properties and bump an internal counter rather than borrowing caller memory.
  *
  * Returns the fate of this call's event: PH_OK if accepted into the ring,
  * PH_ERR_DISABLED if the SDK is off, PH_ERR_BADARG for a NULL/empty name, or
  * PH_ERR_TRUNCATED if an over-cap event name was accepted in truncated form, or
- * PH_ERR_RATE_LIMITED if the token bucket rejected it. Ring saturation still
- * returns PH_OK (your event is accepted; an older one is evicted) and surfaces
- * via ph_dropped_events()/on_stats, not here. Most callers ignore the return.
+ * PH_ERR_RATE_LIMITED if the native token bucket rejected it. Native ring
+ * saturation still returns PH_OK (your event is accepted; an older one is
+ * evicted) and surfaces via ph_dropped_events()/on_stats, not here. Most
+ * callers ignore the return.
  */
 ph_result ph_capture(const char *event, const ph_props *props);
 

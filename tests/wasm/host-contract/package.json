@@ -1,0 +1,12 @@
+{
+  "name": "posthog-c-wasm-host-contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node contract.mjs"
+  },
+  "dependencies": {
+    "posthog-js": "1.376.4"
+  }
+}

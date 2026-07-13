@@ -10,8 +10,8 @@ This is a source-distributed SDK: compile it and its headers with your applicati
 
 ## Highlights
 
-- **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a thin shim over the browser's already-loaded `window.posthog`.
-- **Native has no SDK dependency.** It follows PostHog's raw HTTP endpoints; WASM deliberately delegates to the page's already-loaded posthog-js.
+- **Native and WASM backends.** native provides HTTP transport + a background sender thread + an on-disk offline queue; wasm is a synchronous shim over a helper-initialized posthog-js client.
+- **Native has no SDK dependency.** It follows PostHog's raw HTTP endpoints; WASM deliberately delegates delivery to host-loaded posthog-js.
 - **Native hot-path-safe capture.** `ph_capture()` copies into a bounded ring and returns; JSON, networking, allocation, wall-clock reads, and RNG happen on the worker. WASM calls posthog-js and `before_send` synchronously, so this guarantee is native-only.
 - **Privacy-first.** Anonymous by default, a `before_send` scrubber hook, a property denylist, and a master kill-switch (see [DESIGN.md](DESIGN.md)).
 
@@ -57,9 +57,38 @@ application's durable settings, then replace it with `ph_identify()` after sign
 in. `ph_reset()` deliberately rolls a new anonymous ID on logout; read it with
 `ph_get_distinct_id()` and persist it before the next launch.
 
-For WASM, initialize posthog-js first with that same ID and expose it as
-`window.__posthog_c_distinct_id` before calling `ph_init()`. The shim rejects a
-mismatch so browser and native activity cannot silently split identities.
+For WASM, initialize posthog-js through the supported host helper before calling
+`ph_init()`. The helper publishes a frozen, versioned descriptor containing the
+actual client reference, so named posthog-js instances work and Closure cannot
+rename the host ABI:
+
+```js
+import posthog from "posthog-js"
+import { initPostHogC } from "./posthog-c/wasm/posthog-c-host.mjs"
+
+initPostHogC(posthog, {
+  api_key: "phc_your_project_key",
+  api_host: "https://us.i.posthog.com",
+  distinct_id: installId,
+  person_profiles: "identified_only", // or "always" / "never"
+  preload_flags: true,
+  send_feature_flag_events: true,
+  release: "myapp@1.2.3",
+  posthog_config: { autocapture: false },
+})
+```
+
+The C config must carry the same API key, normalized host, distinct ID, profile,
+flag, release, and GeoIP policy. `ph_init()` validates all of them before it
+commits callbacks or enabled state. A disabled C initialization performs no
+descriptor reads and makes no calls to the already-loaded posthog-js client.
+Call the helper on a fresh default or named client: it rejects posthog-js's
+otherwise-silent reinitialization no-op, forces the bootstrap ID to remain
+anonymous, and verifies the live client config before publishing the
+descriptor. While the C SDK is initialized, do not use `client.set_config()` to
+replace the token, host, profile, flag, or `before_send` settings. Every bridge
+call rechecks those fields and fails closed if the validated privacy pipeline
+was changed; `ph_shutdown()` releases the module's pinned descriptor.
 
 ### Backend contract
 
@@ -67,15 +96,55 @@ mismatch so browser and native activity cannot silently split identities.
 |---|---|---|
 | Delivery | SDK sender, retry, gzip, offline spill | host-loaded posthog-js |
 | `ph_capture` | bounded enqueue; no heap/wall clock/RNG | synchronous JS bridge; may allocate |
-| `before_send` | sender thread (exceptions pre-enqueue) | caller thread |
+| privacy stages | C denylist + `before_send`; sender thread (exceptions pre-enqueue) | C denylist + `before_send` on caller, then host final scrub after browser enrichment |
 | flags | SDK `/flags/` cache | posthog-js flag cache |
-| rate limit, stats, dropped count | implemented by posthog-c | ignored / returns 0 |
+| `release` | optional serializer enrichment | host finalizer enrichment |
+| `disable_geoip` | forced on events and `/flags/` | forced on events; `/flags/` requires an acknowledged proxy policy |
+| flag exposure policy | SDK emits deduped event | passed as per-read `{ send_event }` |
+| numeric rate limit | posthog-c token bucket | ignored; descriptor acknowledges posthog-js ownership |
+| stats, dropped count | implemented by posthog-c | ignored / returns 0 |
 | `ph_flush`, `ph_shutdown` | drains and owns lifecycle | no-op / releases shim state only |
 
 Both backends share the fixed C API, typed property encoding, denylist behavior,
 and event/control-property privacy tests. Timestamps, UUIDs, automatic
 properties, batching, profiles, flag evaluation, retry, and persistence belong
 to each backend's delivery owner and are not byte-for-byte equivalent.
+
+WASM configuration is intentionally split by owner. The C shim owns `enabled`,
+the C `before_send`/denylist stage, `on_log`, super properties, and whether a
+flag read asks posthog-js to emit an exposure. The host helper owns posthog-js
+bootstrap, identity/profile/preload parity, release enrichment, and the final
+browser scrubber. Native delivery knobs (`flush_at`, intervals, batch/queue and
+body caps, request timeout/retries, gzip, offline/crash settings, numeric rate
+limit, and stats callbacks) are ignored on WASM because posthog-js owns that
+pipeline.
+
+The two scrubber stages see different data. The C hook runs first and sees only
+bounded C caller/super/control properties. `final_before_send` and
+`final_property_denylist` passed to `initPostHogC()` run later, after posthog-js
+adds browser properties; they are the privacy boundary for automatic browser
+enrichment. Removing the required event name or token, or changing/removing the
+SDK-selected distinct ID, drops the whole event. The validated person-profile
+bit and a configured GeoIP event opt-out are restored after those hooks, so
+neither policy can be weakened accidentally. On native, `before_send` likewise
+runs before optional automatic `$os`, `arch`, and `release` enrichment; use the
+C denylist to suppress those automatic fields. SDK-owned identity, library, and
+person-profile fields cannot be replaced by caller, super, or scrubber props.
+
+For strict WASM GeoIP opt-out, route posthog-js through a proxy that injects
+`geoip_disable: true` into `/flags/` requests, then declare that capability:
+
+```js
+initPostHogC(posthog, {
+  // ...matching fields above...
+  disable_geoip: true,
+  geoip_flags: "proxy-inject-v1",
+})
+```
+
+The helper forces `$geoip_disable: true` on events and rejects initialization
+without that explicit flags capability. The capability is a host assertion; the
+C/WASM module cannot inspect or enforce reverse-proxy behavior itself.
 
 ## Build
 
@@ -103,6 +172,16 @@ every push; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the
 WASM parity harness run on Linux.
 
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
+
+The real host-finalizer contract is kept separate from the fast mock harness
+and pins the exact posthog-js version used by CI:
+
+```sh
+cd tests/wasm/host-contract
+npm ci --ignore-scripts --no-audit --no-fund
+cd ../../..
+zig build test-wasm-host
+```
 
 For source consumption with Emscripten, [`wasm/posthog-wasm.rsp`](wasm/posthog-wasm.rsp)
 is the canonical source-and-compile-flag recipe. Invoke it from the posthog-c

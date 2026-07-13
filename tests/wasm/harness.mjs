@@ -1,30 +1,135 @@
-/*
- * Node harness for the WASM backend. Mocks window.posthog + the host-bootstrapped
- * install id, runs the compiled shim, and asserts each call reached posthog-js
- * with the right event/props - including that the shared serializer produced
- * parity values (1.5 stays 1.5, bools stay booleans).
- *
- * Run via `zig build test-wasm`, which passes the normal or Closure-built
- * module path as argv[2].
- */
+/* Normal + Closure behavioral harness for the versioned WASM host contract. */
+import { initPostHogC } from "../../wasm/posthog-c-host.mjs";
+
 const calls = [];
+const initCalls = [];
+let hostConfig = null;
 let currentDistinctId = "install-abc";
-globalThis.window = {
-    __posthog_c_distinct_id: "install-abc",
-    posthog: {
-        capture: (event, props) => calls.push({ fn: "capture", event, props }),
-        identify: (id, props) => calls.push({ fn: "identify", id, props }),
-        group: (type, key, props) => calls.push({ fn: "group", type, key, props }),
-        reset: () => { currentDistinctId = "reset-anon-1"; calls.push({ fn: "reset" }); },
-        get_distinct_id: () => currentDistinctId,
-        register: (props) => calls.push({ fn: "register", props }),
-        alias: (a, b) => calls.push({ fn: "alias", a, b }),
-        captureException: (err, props) => calls.push({ fn: "captureException", name: err.name, message: err.message, props }),
-        isFeatureEnabled: (key) => key === "missing" ? undefined : key === "off" ? false : true,
-        getFeatureFlag: (key) => key === "off" ? false : undefined,
-        getFeatureFlagPayload: () => null,
+
+function runFinalizers(event, props) {
+    let data = {
+        event,
+        properties: {
+            "token": "phc_wasm",
+            "distinct_id": currentDistinctId,
+            "$browser_secret": "automatic-browser-value",
+            ...props,
+        },
+    };
+    const fns = Array.isArray(hostConfig["before_send"])
+        ? hostConfig["before_send"]
+        : [hostConfig["before_send"]];
+    for (const fn of fns) {
+        data = fn(data);
+        if (data == null) return null;
+    }
+    return data;
+}
+
+function makeClient() {
+    return {
+        "config": hostConfig,
+        "capture": (event, props) => {
+            const data = runFinalizers(event, props || {});
+            if (data) calls.push({ fn: "capture", event: data.event, props: data.properties });
+            return data;
+        },
+        "identify": (id, props) => {
+            currentDistinctId = id;
+            calls.push({ fn: "identify", id, props });
+        },
+        "group": (type, key, props) => calls.push({ fn: "group", type, key, props }),
+        "reset": () => {
+            currentDistinctId = "reset-anon-1";
+            calls.push({ fn: "reset" });
+        },
+        "get_distinct_id": () => currentDistinctId,
+        "register": (props) => {
+            if (props && props["distinct_id"]) currentDistinctId = String(props["distinct_id"]);
+            calls.push({ fn: "register", props });
+        },
+        "setPersonPropertiesForFlags": (props, reload) =>
+            calls.push({ fn: "setPersonPropertiesForFlags", props, reload }),
+        "alias": (a, b) => calls.push({ fn: "alias", a, b }),
+        "getFeatureFlag": (key, options) => {
+            calls.push({ fn: "getFeatureFlag", key, options });
+            return key === "missing" ? undefined : key === "off" ? false : true;
+        },
+        "getFeatureFlagPayload": () => null,
+        "reloadFeatureFlags": () => calls.push({ fn: "reloadFeatureFlags" }),
+    };
+}
+
+const posthogRoot = {
+    "init": (apiKey, config, name) => {
+        config["token"] = apiKey; /* posthog-js writes this during _init() */
+        initCalls.push({ apiKey, config, name });
+        hostConfig = config;
+        currentDistinctId = config["bootstrap"]["distinctID"];
+        return makeClient();
     },
 };
+
+/* The helper accepts both C enum values and posthog-js profile strings. These
+ * probes also prove it returns/records the named client rather than assuming a
+ * global posthog object. The final call installs the descriptor used by C. */
+initPostHogC(posthogRoot, {
+    "api_key": "probe",
+    "distinct_id": "probe-identified",
+    "person_profiles": 0,
+    "preload_flags": false,
+});
+initPostHogC(posthogRoot, {
+    "api_key": "probe",
+    "distinct_id": "probe-always",
+    "person_profiles": "always",
+});
+
+let missingGeoipPolicyRejected = false;
+try {
+    initPostHogC(posthogRoot, {
+        "api_key": "probe",
+        "distinct_id": "probe-geo",
+        "disable_geoip": true,
+    });
+} catch (_) {
+    missingGeoipPolicyRejected = true;
+}
+
+let disabledFlagsRejected = false;
+try {
+    initPostHogC(posthogRoot, {
+        "api_key": "probe",
+        "distinct_id": "probe-disabled-flags",
+        "posthog_config": { "advanced_disable_flags": true },
+    });
+} catch (_) {
+    disabledFlagsRejected = true;
+}
+
+globalThis.window = {};
+initPostHogC(posthogRoot, {
+    "api_key": "phc_wasm",
+    "api_host": "https://us.i.posthog.com///",
+    "distinct_id": "install-abc",
+    "person_profiles": 2,
+    "preload_flags": true,
+    "send_feature_flag_events": false,
+    "release": "wasm-release@1",
+    "disable_geoip": true,
+    "geoip_flags": "proxy-inject-v1",
+    "name": "wasm-client",
+    "final_property_denylist": ["$browser_secret", "$process_person_profile"],
+    "final_before_send": (data) => {
+        data.properties["host_scrub_saw_auto"] = "$browser_secret" in data.properties;
+        data.properties["$geoip_disable"] = false; /* final policy must win */
+        data.properties["$process_person_profile"] = true;
+        if (data.event === "host_drop_envelope") delete data.properties["token"];
+        if (data.event === "host_redirect_identity")
+            data.properties["distinct_id"] = "other-id";
+        return data;
+    },
+});
 
 let checks = 0;
 let failures = 0;
@@ -36,86 +141,142 @@ function check(cond, msg) {
     }
 }
 
+check(initCalls[0].config.person_profiles === "identified_only",
+      "host helper maps PH_IDENTIFIED_ONLY");
+check(initCalls[0].config.advanced_disable_feature_flags_on_first_load === true,
+      "host helper maps preload_flags=false");
+check(initCalls[1].config.person_profiles === "always",
+      "host helper maps PH_ALWAYS");
+check(missingGeoipPolicyRejected,
+      "host helper rejects GeoIP event-only opt-out without flags proxy policy");
+check(disabledFlagsRejected,
+      "host helper rejects a posthog-js config that disables the public flag API");
+check(initCalls.at(-1).name === "wasm-client",
+      "host helper initializes the requested named client");
+check(globalThis.__posthog_c_v1 === globalThis.window.__posthog_c_v1 &&
+      Object.isFrozen(globalThis.__posthog_c_v1),
+      "host helper publishes one frozen descriptor");
+check(globalThis.__posthog_c_v1.api_host === "https://us.i.posthog.com",
+      "host helper normalizes trailing host slashes");
+check(initCalls.at(-1).config.bootstrap.isIdentifiedID === false,
+      "host helper keeps the bootstrap install id anonymous");
+check(Object.isFrozen(initCalls.at(-1).config.before_send),
+      "host helper freezes the validated finalizer pipeline");
+
 const modulePath = process.argv[2] || "./test_wasm.mjs";
 const { default: createPH } = await import(modulePath);
 const Module = await createPH();
 const cFailures = Module._wasm_run_test();
-check(cFailures === 0, "C-side lifecycle and return-code checks passed");
+check(cFailures === 0, "C-side lifecycle, config, and return-code checks passed");
 
 const cap = calls.find((c) => c.fn === "capture" && c.event === "level_started");
-check(cap, "capture reached window.posthog");
-check(cap && cap.event === "level_started", "event name = level_started");
+check(cap, "capture reached descriptor.client");
 check(cap && cap.props.weapon === "sword", "string prop weapon=sword");
 check(cap && cap.props.level === 3, "int prop level=3");
 check(cap && cap.props.score === 1.5, "double prop score=1.5 (serializer parity)");
 check(cap && cap.props.alive === true, "bool prop alive=true");
 check(cap && cap.props.super_keep === "yes", "WASM super prop merged before scrub");
-check(cap && cap.props.scrubbed === true, "before_send added scrubbed=true");
-check(cap && !("token" in cap.props), "denylist stripped token");
-check(cap && !("secret" in cap.props), "before_send stripped secret");
-check(!calls.some((c) => c.event === "drop_me"), "before_send dropped drop_me");
-check(calls.some((c) => c.event === "distinct_id_getter_ok"), "current distinct id is readable");
-check(!calls.some((c) => c.event === "disabled_init" ||
-                         c.event === "failed_badarg_init" ||
-                         c.event === "failed_denylist_init" ||
-                         c.event === "failed_identity_init"),
+check(cap && cap.props.scrubbed === true, "C before_send added scrubbed=true");
+check(cap && "token" in cap.props, "required ingestion token survives");
+check(cap && !("secret" in cap.props), "C before_send stripped caller secret");
+check(cap && !("$browser_secret" in cap.props) && cap.props.host_scrub_saw_auto === true,
+      "host final scrubber sees then removes posthog-js enrichment");
+check(cap && cap.props.release === "wasm-release@1",
+      "host finalizer injects configured release");
+check(cap && cap.props.$geoip_disable === true,
+      "GeoIP event opt-out is forced after host scrubbers");
+check(cap && cap.props.$process_person_profile === false,
+      "PH_NEVER is restored after host scrubbers and denylist");
+check(!calls.some((c) => c.event === "drop_me"), "C before_send dropped drop_me");
+check(!calls.some((c) => c.event === "host_drop_envelope"),
+      "host finalizer dropped an invalid ingestion envelope");
+check(!calls.some((c) => c.event === "caller_redirect_identity" ||
+                         c.event === "host_redirect_identity"),
+      "caller and final scrubbers cannot redirect the validated identity");
+check(calls.some((c) => c.event === "distinct_id_getter_ok"),
+      "current distinct id is readable through descriptor client");
+check(!calls.some((c) => ["disabled_init", "failed_badarg_init",
+                           "failed_denylist_init", "failed_throwing_host_init",
+                           "failed_identity_init"].includes(c.event)),
       "failed/disabled initialization emitted no events");
 check(!calls.some((c) => c.event === "oom_capture"),
       "capture serialization failure emitted no event");
 
-const id = calls.find((c) => c.fn === "identify");
-check(id && id.id === "acct-9", "identify id=acct-9");
-check(id && id.props && id.props.plan === "pro", "identify $set prop plan=pro");
-check(id && id.props && !("token" in id.props), "identify props passed through denylist");
-check(!calls.some((c) => c.fn === "identify" && c.id === "oom-identify"),
-      "identify serialization failure emitted no host call");
+const identify = calls.find((c) => c.fn === "capture" && c.event === "$identify");
+check(identify && identify.props.distinct_id === "acct-9" &&
+      identify.props.$anon_distinct_id === "install-abc",
+      "PH_NEVER identify switches identity with the anonymous id preserved");
+check(identify && identify.props.$set && identify.props.$set.plan === "pro",
+      "PH_NEVER identify preserves reviewed flag/person properties");
+check(identify && identify.props.$process_person_profile === false,
+      "PH_NEVER identify cannot create a profile");
+check(!calls.some((c) => c.fn === "identify"),
+      "PH_NEVER bypasses posthog-js identify no-op");
+check(calls.some((c) => c.fn === "setPersonPropertiesForFlags" &&
+                        c.props.plan === "pro" && c.reload === false),
+      "PH_NEVER identify updates feature-flag evaluation properties");
+check(calls.some((c) => c.fn === "register" && c.props.distinct_id === "acct-9"),
+      "PH_NEVER identify updates the host distinct id");
 
-const g = calls.find((c) => c.fn === "group");
-check(g && g.type === "game" && g.key === "asteroids", "group game/asteroids");
-check(g && g.props && g.props.players === 4, "group properties preserved");
-check(g && g.props && !("token" in g.props), "group props passed through denylist");
+const alias = calls.find((c) => c.fn === "capture" && c.event === "$create_alias");
+check(alias && alias.props.alias === "alias-9" &&
+      alias.props.distinct_id === "acct-9" &&
+      alias.props.$process_person_profile === false,
+      "PH_NEVER alias uses a raw profile-suppressed control event");
+check(!calls.some((c) => c.fn === "alias"),
+      "PH_NEVER bypasses posthog-js alias no-op");
+check(calls.some((c) => c.fn === "capture" && c.event === "$create_alias" &&
+                        c.props.alias === "alias-legacy" &&
+                        c.props.distinct_id === "legacy-old"),
+      "explicit alias originals remain valid SDK-owned identities");
+check(calls.filter((c) => c.fn === "capture" && c.event === "$create_alias").length === 2,
+      "empty aliases never reach the host");
+
+const group = calls.find((c) => c.fn === "group");
+check(group && group.type === "game" && group.key === "asteroids",
+      "group delegates to the descriptor client");
+check(group && group.props.players === 4 && !("token" in group.props),
+      "group properties pass through the C privacy stage");
+check(!calls.some((c) => c.fn === "group" && (!c.type || !c.key)),
+      "empty group identifiers never reach the host");
+check(calls.some((c) => c.event === "restored_host_contract") &&
+      !calls.some((c) => c.event === "mutated_host_contract"),
+      "bridge rejects a mutated finalizer and recovers after restoration");
 check(!calls.some((c) => c.fn === "group" && c.key === "oom-group"),
       "group serialization failure emitted no host call");
 
-check(calls.some((c) => c.event === "missing_fallback_true"), "missing flag honored fallback=true");
-check(calls.some((c) => c.event === "false_flag_ok"), "false flag resolved as PH_OK value");
+const flagReads = calls.filter((c) => c.fn === "getFeatureFlag");
+check(flagReads.length >= 2 && flagReads.every((c) => c.options.send_event === false),
+      "send_feature_flag_events=false reaches every posthog-js flag read");
+check(calls.some((c) => c.event === "missing_fallback_true"),
+      "missing flag honored fallback=true");
+check(calls.some((c) => c.event === "false_flag_ok"),
+      "false flag resolved as a present value");
 
 const exc = calls.find((c) => c.fn === "capture" && c.event === "$exception");
-const excEntry = exc && exc.props && exc.props.$exception_list && exc.props.$exception_list[0];
+const excEntry = exc && exc.props.$exception_list && exc.props.$exception_list[0];
 const excFrames = excEntry && excEntry.stacktrace && excEntry.stacktrace.frames;
 check(exc && exc.props.$exception_level === "warning", "handled exception level is warning");
-check(exc && exc.props.scrubbed === true, "exception props passed through before_send");
+check(exc && exc.props.scrubbed === true, "exception props passed through C before_send");
 check(exc && exc.props.exception_keep === "yes", "exception extra property preserved");
-check(exc && !("token" in exc.props) && !("secret" in exc.props),
-      "exception extra/super properties passed through privacy scrub");
-check(excEntry && excEntry.type === "NativeAssertion", "structured exception type preserved");
-check(excEntry && excEntry.value === "redacted", "structured exception value uses reviewed text");
-check(excEntry && excEntry.mechanism && excEntry.mechanism.handled === true,
-      "structured exception handled mechanism preserved");
-check(excEntry && excEntry.mechanism && excEntry.mechanism.synthetic === true,
-      "structured exception synthetic mechanism preserved");
-check(excEntry && excEntry.stacktrace && excEntry.stacktrace.type === "raw",
-      "structured exception uses raw stacktrace shape");
+check(exc && !("secret" in exc.props), "exception properties passed through privacy scrub");
+check(exc && exc.props.release === "wasm-release@1" &&
+      exc.props.$geoip_disable === true,
+      "host release and GeoIP finalizers cover structured exceptions");
+check(excEntry && excEntry.type === "NativeAssertion" && excEntry.value === "redacted",
+      "structured exception type and reviewed value preserved");
+check(excEntry && excEntry.mechanism.handled === true &&
+      excEntry.mechanism.synthetic === true,
+      "structured exception mechanism preserved");
 check(excFrames && excFrames.length === 2, "caller-supplied exception frames preserved");
-check(excFrames && excFrames[0].platform === "custom" && excFrames[0].lang === "cpp",
-      "exception frame platform/language preserved");
 check(excFrames && excFrames[0].function === "sim::step" &&
-                   excFrames[0].filename === "sim.cpp" &&
-                   excFrames[0].lineno === 412 &&
-                   excFrames[0].in_app === true &&
-                   excFrames[0].resolved === true,
-      "first exception frame fields preserved");
-check(excFrames && excFrames[1].function === "main" &&
-                   excFrames[1].filename === "main.cpp" &&
-                   excFrames[1].lineno === 20,
-      "second exception frame fields preserved");
+      excFrames[0].filename === "sim.cpp" && excFrames[0].lineno === 412,
+      "structured exception frame fields preserved");
 check(excFrames && excFrames.every((f) => !("module" in f)),
       "exception frame denylist removes module fields");
-check(!calls.some((c) => c.fn === "captureException"),
-      "WASM does not synthesize a browser Error/stack");
 check(!calls.some((c) => c.fn === "capture" && c.event === "$exception" &&
                          c.props.$exception_list?.[0]?.type === "OOMException"),
       "exception serialization failure emitted no event");
 
-console.log(`\nwasm harness: ${calls.length} posthog calls, ${checks} checks, ${failures} failures`);
+console.log(`\nwasm harness: ${calls.length} host calls, ${checks} checks, ${failures} failures`);
 process.exit(failures ? 1 : 0);

@@ -77,8 +77,9 @@ jobs:
         working-directory: tests/consumer
         run: zig build run
 
-  # WASM backend: compile the window.posthog shim with emcc and run the Node
-  # parity harness (mocked window.posthog).
+  # WASM backend: compile the supported posthog-js host bridge with emcc, run
+  # the fast mock harness under normal + Closure builds, then verify the final
+  # privacy stage against an exact posthog-js release.
   wasm:
     runs-on: ubuntu-latest
     steps:
@@ -91,6 +92,11 @@ jobs:
           version: 3.1.64
       - name: Build + test WASM
         run: zig build test-wasm
+      - name: Install pinned posthog-js host-contract dependency
+        working-directory: tests/wasm/host-contract
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test real posthog-js host finalizer
+        run: zig build test-wasm-host
 
   # Real HTTPS delivery to PostHog, gated on the whole build+test matrix above so
   # we never send real events (or spend Actions minutes) on a broken tree. Runs
