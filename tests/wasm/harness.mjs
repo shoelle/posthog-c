@@ -38,7 +38,8 @@ function check(cond, msg) {
 }
 
 const Module = await createPH();
-Module._wasm_run_test();
+const cFailures = Module._wasm_run_test();
+check(cFailures === 0, "C-side lifecycle and return-code checks passed");
 
 const cap = calls.find((c) => c.fn === "capture" && c.event === "level_started");
 check(cap, "capture reached window.posthog");
@@ -53,24 +54,67 @@ check(cap && !("token" in cap.props), "denylist stripped token");
 check(cap && !("secret" in cap.props), "before_send stripped secret");
 check(!calls.some((c) => c.event === "drop_me"), "before_send dropped drop_me");
 check(calls.some((c) => c.event === "distinct_id_getter_ok"), "current distinct id is readable");
+check(!calls.some((c) => c.event === "disabled_init" ||
+                         c.event === "failed_badarg_init" ||
+                         c.event === "failed_denylist_init" ||
+                         c.event === "failed_identity_init"),
+      "failed/disabled initialization emitted no events");
+check(!calls.some((c) => c.event === "oom_capture"),
+      "capture serialization failure emitted no event");
 
 const id = calls.find((c) => c.fn === "identify");
 check(id && id.id === "acct-9", "identify id=acct-9");
 check(id && id.props && id.props.plan === "pro", "identify $set prop plan=pro");
 check(id && id.props && !("token" in id.props), "identify props passed through denylist");
+check(!calls.some((c) => c.fn === "identify" && c.id === "oom-identify"),
+      "identify serialization failure emitted no host call");
 
 const g = calls.find((c) => c.fn === "group");
 check(g && g.type === "game" && g.key === "asteroids", "group game/asteroids");
 check(g && g.props && g.props.players === 4, "group properties preserved");
 check(g && g.props && !("token" in g.props), "group props passed through denylist");
+check(!calls.some((c) => c.fn === "group" && c.key === "oom-group"),
+      "group serialization failure emitted no host call");
 
 check(calls.some((c) => c.event === "missing_fallback_true"), "missing flag honored fallback=true");
 check(calls.some((c) => c.event === "false_flag_ok"), "false flag resolved as PH_OK value");
 
-const exc = calls.find((c) => c.fn === "captureException");
-check(exc && exc.name === "NativeAssertion", "exception type reached captureException");
-check(exc && exc.message === "redacted", "exception message was scrubbed");
-check(exc && exc.props && exc.props.scrubbed === true, "exception props were scrubbed");
+const exc = calls.find((c) => c.fn === "capture" && c.event === "$exception");
+const excEntry = exc && exc.props && exc.props.$exception_list && exc.props.$exception_list[0];
+const excFrames = excEntry && excEntry.stacktrace && excEntry.stacktrace.frames;
+check(exc && exc.props.$exception_level === "warning", "handled exception level is warning");
+check(exc && exc.props.scrubbed === true, "exception props passed through before_send");
+check(exc && exc.props.exception_keep === "yes", "exception extra property preserved");
+check(exc && !("token" in exc.props) && !("secret" in exc.props),
+      "exception extra/super properties passed through privacy scrub");
+check(excEntry && excEntry.type === "NativeAssertion", "structured exception type preserved");
+check(excEntry && excEntry.value === "redacted", "structured exception value uses reviewed text");
+check(excEntry && excEntry.mechanism && excEntry.mechanism.handled === true,
+      "structured exception handled mechanism preserved");
+check(excEntry && excEntry.mechanism && excEntry.mechanism.synthetic === true,
+      "structured exception synthetic mechanism preserved");
+check(excEntry && excEntry.stacktrace && excEntry.stacktrace.type === "raw",
+      "structured exception uses raw stacktrace shape");
+check(excFrames && excFrames.length === 2, "caller-supplied exception frames preserved");
+check(excFrames && excFrames[0].platform === "custom" && excFrames[0].lang === "cpp",
+      "exception frame platform/language preserved");
+check(excFrames && excFrames[0].function === "sim::step" &&
+                   excFrames[0].filename === "sim.cpp" &&
+                   excFrames[0].lineno === 412 &&
+                   excFrames[0].in_app === true &&
+                   excFrames[0].resolved === true,
+      "first exception frame fields preserved");
+check(excFrames && excFrames[1].function === "main" &&
+                   excFrames[1].filename === "main.cpp" &&
+                   excFrames[1].lineno === 20,
+      "second exception frame fields preserved");
+check(excFrames && excFrames.every((f) => !("module" in f)),
+      "exception frame denylist removes module fields");
+check(!calls.some((c) => c.fn === "captureException"),
+      "WASM does not synthesize a browser Error/stack");
+check(!calls.some((c) => c.fn === "capture" && c.event === "$exception" &&
+                         c.props.$exception_list?.[0]?.type === "OOMException"),
+      "exception serialization failure emitted no event");
 
 console.log(`\nwasm harness: ${calls.length} posthog calls, ${checks} checks, ${failures} failures`);
 process.exit(failures ? 1 : 0);

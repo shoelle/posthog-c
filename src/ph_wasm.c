@@ -15,12 +15,13 @@
  *
  * The public API is implemented entirely here; the shared property/JSON code
  * (ph_props.c, ph_json.c, ph_str.c, ph_serialize.c) compiles into the wasm
- * module unchanged. ph_flush/ph_shutdown are no-ops - posthog-js manages its
- * own lifecycle.
+ * module unchanged. ph_flush is a no-op; ph_shutdown releases only shim-owned
+ * C state because posthog-js manages its own lifecycle.
  */
 #if defined(__EMSCRIPTEN__)
 
 #include "posthog.h"
+#include "ph_exception_shared.h"
 #include "ph_str.h"
 #include "ph_util.h"
 
@@ -32,6 +33,7 @@
  * in the native-only internal header. */
 void ph_serialize_props_object(const ph_props *p, ph_strbuf *out);
 
+static int g_initialized = 0;
 static int g_enabled = 0;
 static int g_identity_ok = 0;
 static ph_before_send_fn g_before_send = NULL;
@@ -40,6 +42,14 @@ static char g_denylist[PH_MAX_DENYLIST][PH_KEY_CAP];
 static int g_denylist_count = 0;
 static ph_props g_super;
 static _Thread_local int g_in_callback;
+
+/* Deterministic regression seam: the WASM harness links the production source
+ * set directly and asks the next property serialization to take its OOM path.
+ * Unreferenced production builds dead-strip this internal ph__ symbol. */
+static int g_fail_next_props_serialize = 0;
+void ph__wasm_test_fail_next_props_serialize(void) {
+    g_fail_next_props_serialize = 1;
+}
 
 const char *ph_version(void) { return PH_VERSION_STRING; }
 
@@ -85,8 +95,9 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->preload_flags = 1;
 }
 
-/* Serialize props to a malloc'd JSON object string (caller frees). "{}" when
- * empty or on allocation failure. */
+/* Serialize props to a malloc'd JSON object string (caller frees). NULL means
+ * serialization failed; callers must suppress the host operation rather than
+ * silently substitute a schema-less object or hand partial JSON to JS. */
 static char *props_to_json(const ph_props *p) {
     ph_strbuf b;
     ph_strbuf_init(&b);
@@ -94,55 +105,74 @@ static char *props_to_json(const ph_props *p) {
         ph_serialize_props_object(p, &b);
     else
         ph_strbuf_append_cstr(&b, "{}");
-    if (!b.data) {
-        char *fallback = (char *)malloc(3);
-        if (fallback) {
-            fallback[0] = '{';
-            fallback[1] = '}';
-            fallback[2] = '\0';
-        }
-        return fallback;
+    if (g_fail_next_props_serialize) {
+        g_fail_next_props_serialize = 0;
+        b.oom = 1;
+    }
+    if (b.oom || !b.data) {
+        ph_strbuf_free(&b);
+        return NULL;
     }
     return b.data;
 }
 
-ph_result ph_init(const ph_config *cfg) {
-    int i, n;
+static ph_result validate_config(const ph_config *cfg) {
+    int i;
     if (!cfg) return PH_ERR_BADARG;
+    if (!cfg->enabled) return PH_OK;
+    if (!cfg->api_key || !cfg->api_key[0]) return PH_ERR_BADARG;
+    if (!cfg->distinct_id || cfg->distinct_id[0] == '\0') return PH_ERR_BADARG;
+    if (strlen(cfg->distinct_id) >= PH_DISTINCT_ID_CAP) return PH_ERR_BADARG;
+    if (cfg->property_denylist_count < 0 ||
+        cfg->property_denylist_count > PH_MAX_DENYLIST)
+        return PH_ERR_BADARG;
+    if (cfg->property_denylist_count > 0 && !cfg->property_denylist)
+        return PH_ERR_BADARG;
+    for (i = 0; cfg->property_denylist &&
+                i < cfg->property_denylist_count; i++) {
+        if (cfg->property_denylist[i] &&
+            strlen(cfg->property_denylist[i]) >= PH_KEY_CAP)
+            return PH_ERR_BADARG;
+    }
+    return PH_OK;
+}
 
-    g_enabled = cfg->enabled;
+ph_result ph_init(const ph_config *cfg) {
+    ph_result valid;
+    int identity_ok = 0;
+    int i;
+
+    if (g_initialized) return PH_ERR;
+    valid = validate_config(cfg);
+    if (valid != PH_OK) return valid;
+
+    if (cfg->enabled) {
+        /* Verify the host before committing any C-side state. A mismatch is a
+         * failed initialization, so the caller can fix the bootstrap and retry. */
+        identity_ok = EM_ASM_INT({
+            var expected = UTF8ToString($0);
+            if (typeof window === 'undefined' || !window.posthog || !expected) return 0;
+            return window.__posthog_c_distinct_id === expected ? 1 : 0;
+        }, cfg->distinct_id);
+        if (!identity_ok) return PH_ERR;
+    }
+
+    /* Commit only after every fallible check has passed. */
+    g_enabled = cfg->enabled ? 1 : 0;
+    g_identity_ok = identity_ok;
     g_before_send = cfg->before_send;
     g_user_data = cfg->user_data;
     g_denylist_count = 0;
     ph_props_init(&g_super);
-    if (cfg->property_denylist && cfg->property_denylist_count > 0) {
-        n = cfg->property_denylist_count;
-        if (n > PH_MAX_DENYLIST) n = PH_MAX_DENYLIST;
-        for (i = 0; i < n; i++) {
-            if (cfg->property_denylist[i] && cfg->property_denylist[i][0])
-                ph_copy_capped(g_denylist[g_denylist_count++], PH_KEY_CAP,
-                            cfg->property_denylist[i]);
-        }
+    for (i = 0; g_enabled && cfg->property_denylist &&
+                i < cfg->property_denylist_count; i++) {
+        if (cfg->property_denylist[i] && cfg->property_denylist[i][0])
+            ph_copy_capped(g_denylist[g_denylist_count++], PH_KEY_CAP,
+                           cfg->property_denylist[i]);
     }
+    g_initialized = 1;
 
-    if (!g_enabled) {
-        g_identity_ok = 0;
-        return PH_OK;
-    }
-    if (!cfg->api_key || !cfg->api_key[0]) return PH_ERR_BADARG;
-    if (!cfg->distinct_id || cfg->distinct_id[0] == '\0') return PH_ERR_BADARG;
-    if (strlen(cfg->distinct_id) >= PH_DISTINCT_ID_CAP) return PH_ERR_BADARG;
-
-    /* Verify the host bootstrapped posthog-js with our install id. We read the
-     * host-owned variable synchronously rather than posthog.get_distinct_id(),
-     * which is only reliable after posthog-js's async load completes. */
-    g_identity_ok = EM_ASM_INT({
-        var expected = UTF8ToString($0);
-        if (typeof window === 'undefined' || !window.posthog || !expected) return 0;
-        return window.__posthog_c_distinct_id === expected ? 1 : 0;
-    }, cfg->distinct_id);
-
-    return (g_enabled && g_identity_ok) ? PH_OK : PH_ERR;
+    return PH_OK;
 }
 
 ph_result ph_capture(const char *event, const ph_props *props) {
@@ -156,10 +186,11 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     ph_copy_capped(event_capped, sizeof(event_capped), event);
     if (!scrub_props(event_capped, props, 1, &clean)) return PH_OK; /* before_send dropped it */
     json = props_to_json(&clean);
+    if (!json) return PH_ERR;
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.capture(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, event_capped, json ? json : "{}");
+    }, event_capped, json);
     free(json);
     return truncated ? PH_ERR_TRUNCATED : PH_OK;
 }
@@ -172,10 +203,11 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     ph_copy_capped(id_capped, sizeof(id_capped), distinct_id);
     if (!scrub_props("$identify", set_props, 0, &clean)) return;
     json = props_to_json(&clean);
+    if (!json) return;
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.identify(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, id_capped, json ? json : "{}");
+    }, id_capped, json);
     free(json);
 }
 
@@ -238,11 +270,12 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     ph_copy_capped(key_capped, sizeof(key_capped), key);
     if (!scrub_props("$groupidentify", set_props, 0, &clean)) return;
     json = props_to_json(&clean);
+    if (!json) return;
     EM_ASM({
         if (typeof window !== 'undefined' && window.posthog)
             window.posthog.group(UTF8ToString($0), UTF8ToString($1),
                                  JSON.parse(UTF8ToString($2)));
-    }, type_capped, key_capped, json ? json : "{}");
+    }, type_capped, key_capped, json);
     free(json);
 }
 
@@ -269,46 +302,70 @@ void ph_unregister(const char *key) {
     ph_props_remove_key(&g_super, key);
 }
 
-void ph_capture_exception(const ph_exception *ex) {
-    char *json;
-    ph_props base, clean;
-    char type[PH_VAL_CAP];
-    char message[PH_VAL_CAP];
-    const char *v;
-    if (!g_enabled || !g_identity_ok || !ex) return;
-    ph_props_init(&base);
-    ph_props_set_str(&base, "$exception_type", ex->type ? ex->type : "Error");
-    ph_props_set_str(&base, "$exception_message", ex->message ? ex->message : "");
-    if (ex->extra) {
-        int i;
-        for (i = 0; i < ex->extra->count; i++) ph_copy_prop_value(&base, &ex->extra->items[i]);
-    }
-    ph_props_merge(&clean, &base, &g_super);
-    apply_denylist(&clean);
-    if (denylist_has("type")) ph_props_remove_key(&clean, "$exception_type");
-    if (denylist_has("message")) ph_props_remove_key(&clean, "$exception_message");
+static int prepare_exception_props(const ph_exception *ex, ph_props *clean,
+                                   char *type, size_t type_cap,
+                                   char *message, size_t message_cap,
+                                   int *omit_function, int *omit_filename,
+                                   int *omit_module, int *omit_frames) {
+    ph_props base;
+    ph__exception_prepare_base(ex, &base);
+    ph_props_merge(clean, &base, &g_super);
+    apply_denylist(clean);
+    if (denylist_has("type")) ph_props_remove_key(clean, "$exception_type");
+    if (denylist_has("message")) ph_props_remove_key(clean, "$exception_message");
     if (g_before_send) {
         int keep;
         g_in_callback++;
-        keep = g_before_send("$exception", &clean, g_user_data);
+        keep = g_before_send("$exception", clean, g_user_data);
         g_in_callback--;
-        if (!keep) return;
+        if (!keep) return 0;
     }
-    v = ph_props_find_last_str(&clean, "$exception_type");
-    ph_copy_capped(type, sizeof(type), v ? v : "Error");
-    v = ph_props_find_last_str(&clean, "$exception_message");
-    ph_copy_capped(message, sizeof(message), v ? v : "");
-    ph_props_remove_key(&clean, "$exception_type");
-    ph_props_remove_key(&clean, "$exception_message");
+    ph__exception_take_type_message(clean, type, type_cap, message, message_cap);
+
+    *omit_function = denylist_has("function") ||
+                     denylist_has("$exception_frame_function");
+    *omit_filename = denylist_has("filename") ||
+                     denylist_has("$exception_frame_filename");
+    *omit_module = denylist_has("module") ||
+                   denylist_has("$exception_frame_module");
+    *omit_frames = denylist_has("frames") || denylist_has("stacktrace") ||
+                   denylist_has("$exception_frames");
+    return 1;
+}
+
+void ph_capture_exception(const ph_exception *ex) {
+    char *json;
+    ph_props clean;
+    ph_strbuf list;
+    char type[PH_EXCEPTION_FIELD_CAP];
+    char message[PH_EXCEPTION_FIELD_CAP];
+    int omit_function, omit_filename, omit_module, omit_frames;
+
+    if (!g_enabled || !g_identity_ok || !ex) return;
+    if (!prepare_exception_props(ex, &clean, type, sizeof(type), message,
+                                 sizeof(message), &omit_function,
+                                 &omit_filename, &omit_module, &omit_frames))
+        return;
+
     json = props_to_json(&clean);
+    if (!json) return;
+
+    ph_strbuf_init(&list);
+    ph__exception_build_list(&list, ex, type, message, omit_function,
+                             omit_filename, omit_module, omit_frames, 0);
+    if (list.oom || !list.data) {
+        free(json);
+        ph_strbuf_free(&list);
+        return;
+    }
+
     EM_ASM({
         if (typeof window === 'undefined' || !window.posthog) return;
-        var err = new Error(UTF8ToString($1));
-        err.name = UTF8ToString($0);
-        var extra = JSON.parse(UTF8ToString($2));
-        extra.$exception_handled = $3 ? true : false;
-        window.posthog.captureException(err, extra);
-    }, type, message, json ? json : "{}", ex->handled);
+        var props = JSON.parse(UTF8ToString($0));
+        props["$exception_list"] = JSON.parse(UTF8ToString($1));
+        window.posthog.capture("$exception", props);
+    }, json, list.data);
+    ph_strbuf_free(&list);
     free(json);
 }
 
@@ -371,8 +428,14 @@ uint64_t ph_dropped_events(void) { return 0; }
 void ph_flush(int timeout_ms) { (void)timeout_ms; }
 void ph_shutdown(void) {
     if (g_in_callback) return;
+    g_initialized = 0;
     g_enabled = 0;
     g_identity_ok = 0;
+    g_before_send = NULL;
+    g_user_data = NULL;
+    g_denylist_count = 0;
+    ph_props_init(&g_super);
+    g_fail_next_props_serialize = 0;
 }
 
 #endif /* __EMSCRIPTEN__ */

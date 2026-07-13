@@ -8,6 +8,10 @@
 #include <emscripten.h>
 #include <string.h>
 
+/* Internal deterministic seam provided by ph_wasm.c. It is deliberately not
+ * part of the installed public header. */
+void ph__wasm_test_fail_next_props_serialize(void);
+
 static void remove_key(ph_props *props, const char *key) {
     int i, k;
     for (i = 0; i < props->count;) {
@@ -32,29 +36,72 @@ static int wasm_before_send(const char *event, ph_props *props, void *user) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-void wasm_run_test(void) {
+int wasm_run_test(void) {
     ph_config cfg;
     ph_props p;
-    static const char *denylist[] = {"token"};
+    ph_config second;
+    static const char *denylist[] = {"token", "module"};
+    const char *invalid_denylist[1];
+    char overcap_denylist_key[PH_KEY_CAP + 1];
     char flag[16];
     char distinct_id[PH_DISTINCT_ID_CAP];
+    int failures = 0;
+
+    /* Disabled initialization still owns the singleton until shutdown. */
+    ph_config_defaults(&cfg);
+    cfg.enabled = 0;
+    if (ph_init(&cfg) != PH_OK) failures++;
+    if (ph_init(&cfg) != PH_ERR) failures++;
+    if (ph_capture("disabled_init", NULL) != PH_ERR_DISABLED) failures++;
+    ph_shutdown();
+
+    /* Failed argument/host validation commits no state and remains retryable. */
+    ph_config_defaults(&cfg);
+    cfg.distinct_id = "install-abc";
+    if (ph_init(&cfg) != PH_ERR_BADARG) failures++;
+    if (ph_capture("failed_badarg_init", NULL) != PH_ERR_DISABLED) failures++;
+    cfg.api_key = "phc_wasm";
+    memset(overcap_denylist_key, 'x', sizeof(overcap_denylist_key) - 1);
+    overcap_denylist_key[sizeof(overcap_denylist_key) - 1] = '\0';
+    invalid_denylist[0] = overcap_denylist_key;
+    cfg.property_denylist = invalid_denylist;
+    cfg.property_denylist_count = 1;
+    if (ph_init(&cfg) != PH_ERR_BADARG) failures++;
+    if (ph_capture("failed_denylist_init", NULL) != PH_ERR_DISABLED) failures++;
+    cfg.property_denylist = NULL;
+    cfg.property_denylist_count = 0;
+    cfg.distinct_id = "wrong-install-id";
+    if (ph_init(&cfg) != PH_ERR) failures++;
+    if (ph_capture("failed_identity_init", NULL) != PH_ERR_DISABLED) failures++;
+    cfg.distinct_id = "install-abc";
+    if (ph_init(&cfg) != PH_OK) failures++;
+    ph_shutdown();
 
     ph_config_defaults(&cfg);
     cfg.api_key = "phc_wasm";
     cfg.distinct_id = "install-abc"; /* must match the harness bootstrap id */
     cfg.before_send = wasm_before_send;
     cfg.property_denylist = denylist;
-    cfg.property_denylist_count = 1;
-    ph_init(&cfg);
-    if (ph_get_distinct_id(distinct_id, sizeof(distinct_id)) == PH_OK &&
-        strcmp(distinct_id, "install-abc") == 0)
-        ph_capture("distinct_id_getter_ok", NULL);
+    cfg.property_denylist_count = 2;
+    if (ph_init(&cfg) != PH_OK) failures++;
 
     ph_props_init(&p);
     ph_props_set_str(&p, "super_keep", "yes");
     ph_props_set_str(&p, "token", "super-token");
     ph_props_set_str(&p, "secret", "super-secret");
     ph_register(&p);
+
+    /* Reconfiguration is rejected before it can clear callbacks, denylist, or
+     * already-registered super properties on the live singleton. */
+    ph_config_defaults(&second);
+    second.enabled = 0;
+    if (ph_init(&second) != PH_ERR) failures++;
+
+    if (ph_get_distinct_id(distinct_id, sizeof(distinct_id)) == PH_OK &&
+        strcmp(distinct_id, "install-abc") == 0)
+        ph_capture("distinct_id_getter_ok", NULL);
+    else
+        failures++;
 
     ph_props_init(&p);
     ph_props_set_str(&p, "weapon", "sword");
@@ -65,6 +112,16 @@ void wasm_run_test(void) {
     ph_props_set_str(&p, "secret", "also-hidden");
     ph_capture("level_started", &p);
     ph_capture("drop_me", NULL);
+
+    /* Every JSON-using facade call fails closed when serialization fails. */
+    ph_props_init(&p);
+    ph_props_set_str(&p, "required", "present");
+    ph__wasm_test_fail_next_props_serialize();
+    if (ph_capture("oom_capture", &p) != PH_ERR) failures++;
+    ph__wasm_test_fail_next_props_serialize();
+    ph_identify("oom-identify", &p);
+    ph__wasm_test_fail_next_props_serialize();
+    ph_group("game", "oom-group", &p);
 
     ph_props_init(&p);
     ph_props_set_str(&p, "plan", "pro");
@@ -82,13 +139,43 @@ void wasm_run_test(void) {
         ph_capture("false_flag_ok", NULL);
 
     {
+        ph_stackframe frames[2];
+        ph_props extra;
         ph_exception ex;
+
+        memset(frames, 0, sizeof(frames));
+        frames[0].function = "sim::step";
+        frames[0].filename = "sim.cpp";
+        frames[0].module = "private-engine"; /* denylisted by field name */
+        frames[0].lineno = 412;
+        frames[0].in_app = 1;
+        frames[1].function = "main";
+        frames[1].filename = "main.cpp";
+        frames[1].module = "private-app";
+        frames[1].lineno = 20;
+        frames[1].in_app = 1;
+
+        ph_props_init(&extra);
+        ph_props_set_str(&extra, "exception_keep", "yes");
+        ph_props_set_str(&extra, "token", "exception-token");
+        ph_props_set_str(&extra, "secret", "exception-secret");
+
         memset(&ex, 0, sizeof(ex));
         ex.type = "NativeAssertion";
         ex.message = "contains pii";
         ex.handled = 1;
+        ex.synthetic = 1;
+        ex.frames = frames;
+        ex.frame_count = 2;
+        ex.extra = &extra;
+        ph_capture_exception(&ex);
+
+        ex.type = "OOMException";
+        ph__wasm_test_fail_next_props_serialize();
         ph_capture_exception(&ex);
     }
+
+    return failures;
 }
 
 int main(void) { return 0; }
