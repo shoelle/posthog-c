@@ -103,12 +103,20 @@ was changed; `ph_shutdown()` releases the module's pinned descriptor.
 | flag exposure policy | SDK emits deduped event | passed as per-read `{ send_event }` |
 | numeric rate limit | posthog-c token bucket | ignored; descriptor acknowledges posthog-js ownership |
 | stats, dropped count | implemented by posthog-c | ignored / returns 0 |
-| `ph_flush`, `ph_shutdown` | drains and owns lifecycle | no-op / releases shim state only |
+| `ph_flush`, `ph_shutdown` | flushes; shutdown gets one request-timeout drain budget, then spill/drop | no-op / releases shim state only |
 
 Both backends share the fixed C API, typed property encoding, denylist behavior,
 and event/control-property privacy tests. Timestamps, UUIDs, automatic
 properties, batching, profiles, flag evaluation, retry, and persistence belong
 to each backend's delivery owner and are not byte-for-byte equivalent.
+
+Native `ph_reload_feature_flags_async()` coalesces work on the sender and
+returns a bounded-history request ID whose status distinguishes pending,
+success, failure, and an identity/group context that superseded the request.
+The legacy `ph_reload_feature_flags()` remains the blocking wrapper. posthog-js
+does not expose compatible per-request completion, so enabled WASM returns
+`PH_ERR` from the asynchronous form and keeps the existing host reload call in
+the void wrapper.
 
 WASM configuration is intentionally split by owner. The C shim owns `enabled`,
 the C `before_send`/denylist stage, `on_log`, super properties, and whether a

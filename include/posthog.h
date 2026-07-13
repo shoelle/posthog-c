@@ -429,9 +429,13 @@ uint64_t ph_dropped_events(void);
  */
 void ph_flush(int timeout_ms);
 
-/* Flush, stop the sender thread, and free all SDK resources. The host must first
- * stop/join every thread that can call the SDK. A sender-thread callback cannot
- * shut the SDK down; such a call is ignored. */
+/* Flush, stop the sender thread, and free all SDK resources. Native shutdown
+ * gives the complete network drain one request_timeout_ms monotonic budget,
+ * then persists remaining batches when offline_path is set or counts them as
+ * dropped. An already-running libc DNS resolver cannot be cancelled and may
+ * outlive that budget. The host must first stop/join every thread that can call
+ * the SDK. A sender-thread callback cannot shut the SDK down; that call is
+ * ignored. WASM only releases shim-owned state. */
 void ph_shutdown(void);
 
 #ifdef __cplusplus

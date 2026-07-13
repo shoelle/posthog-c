@@ -2,8 +2,8 @@
 
 Repo-local guidance for coding agents in `posthog-c/` - an embeddable **PostHog
 SDK for C/C++**: one public C interface, a native backend (own HTTP + background
-sender) and a WASM backend (a shim over `window.posthog`). This file is the
-coding brief - conventions, the module map, and the invariants that must hold.
+sender) and a WASM backend (a validated shim over host posthog-js). This file is
+the coding brief - conventions, the module map, and the invariants that must hold.
 See [`DESIGN.md`](DESIGN.md) for architecture + roadmap and
 [`README.md`](README.md) for the public intro.
 
@@ -30,13 +30,13 @@ src/ph_exception.c       ph_capture_exception -> $exception event (posthog_excep
 src/ph_native.c          sender thread + flush handshake + transport + offline spill/replay
 src/ph_serialize.c       event record -> /batch/ JSON  (parity-critical, pure)
 src/ph_jsonval.c         minimal JSON *parser* (DOM) - used only to read /flags/
-src/ph_flags.c           feature flags: /flags/ fetch, cache, accessors, $feature_flag_called
+src/ph_flags.c           queued /flags/ fetch, cache, request status, accessors, $feature_flag_called
 src/ph_http.c            HTTP transport: http over sockets, https delegates to ph_tls
 src/ph_tls.c             HTTPS via system TLS: WinHTTP / Secure Transport / OpenSSL
 src/ph_gzip.c            gzip /batch/ bodies (Content-Encoding: gzip) via vendored sdefl
 src/ph_ratelimit.{h,c}   server-backpressure hold (429/Retry-After + PostHog quota) - pure, unit-tested
 src/ph_crash.{h,c}       signal_crash: POSIX signal / Windows SEH handler -> a persisted $exception replayed next run
-src/ph_wasm.c            WASM backend: the full API as an EM_ASM shim over window.posthog
+src/ph_wasm.c            WASM backend: typed EM_JS bridge over the pinned host descriptor
 src/ph_queue.{h,c}       bounded drop-oldest ring; owns the ph_event record
 src/ph_props.c           ph_props setters + compact packer
 src/ph_util.{h,c}        shared ph_props helpers (copy/remove/find/denylist) - native + wasm
@@ -45,12 +45,15 @@ src/ph_str.{h,c}         growable byte buffer
 src/ph_time.{h,c}        monotonic/wall clocks, ISO-8601, UUIDv7
 src/ph_thread.{h,c}      mutex/cond/thread over Win32 + pthreads
 src/ph_internal.h        SDK context, transport seam, cross-file helpers
+wasm/posthog-c-host.mjs  supported posthog-js bootstrap + final privacy contract
 ```
 
-Data flow: `ph_capture` packs a self-contained event into the ring; the sender
-drains it, serializes a batch, and POSTs. The wasm backend calls straight into
-`window.posthog`, reusing the shared serializer. Full flow and the reasoning
-behind each piece are in DESIGN.md ("Native pipeline").
+Data flow: native `ph_capture` packs a self-contained event into the ring; the
+sender drains it, serializes a batch, and POSTs. The wasm backend validates and
+pins the descriptor installed by `wasm/posthog-c-host.mjs`, then calls its
+posthog-js client while reusing the shared property serializer. Full flow and
+the reasoning behind each piece are in DESIGN.md ("Native pipeline" and "WASM
+host contract").
 
 ## Coding conventions
 
@@ -79,12 +82,15 @@ behind each piece are in DESIGN.md ("Native pipeline").
 Call these out and test both sides if a change risks them; the reasoning is in
 DESIGN.md.
 
-1. **Capture is hot-path-safe.** `ph_capture` and the whole enqueue path must not
-   `malloc`, read the wall clock, or touch an RNG - only the monotonic tick and
-   the capture mutex. (Wall clock + UUID + JSON all live on the sender.)
-2. **Native/wasm parity.** Both backends emit the same event JSON. Property
-   shaping lives in `ph_serialize_props_object`, kept pure; `zig build test-wasm`
-   guards it.
+1. **Native capture is hot-path-safe.** `ph_capture` and the whole enqueue path
+   must not `malloc`, read the wall clock, touch an RNG, or perform I/O. It does
+   read the monotonic tick, increment an atomic, and take SDK-state + queue
+   mutexes. (Wall clock + UUID + JSON all live on the sender.)
+2. **Native/wasm C-property parity.** Typed `ph_props` shaping lives in the pure
+   shared serializer and is identical before the host boundary. posthog-js then
+   owns timestamps, UUIDs, browser enrichment, and final delivery, so complete
+   wire envelopes are intentionally not byte-identical. `zig build test-wasm`
+   guards the shared shapes and bridge behavior.
 3. **Wire shape is fixed by the API.** `distinct_id` goes *inside* `properties`
    for `/batch/` items; `$set`/`$groups`/`$create_alias` have exact shapes (see
    `test_serialize.c`). Go through the serializer; don't freelance the JSON.
@@ -97,6 +103,7 @@ DESIGN.md.
 zig build              # static lib + headers + examples
 zig build test         # native headless suite (must be green before finishing)
 zig build test-wasm    # WASM backend via emcc + Node parity harness (needs emsdk)
+zig build test-wasm-host # pinned real posthog-js contract (after fixture npm ci)
 zig build fuzz         # mutation-fuzz the /flags/ JSON + HTTP response parsers
 zig build run-example  # C quickstart against a dev proxy
 ```

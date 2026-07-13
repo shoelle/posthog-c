@@ -327,8 +327,9 @@ void ph_serialize_batch(const ph_ctx *ctx, const ph_event *events, int n,
 
 /* Serialize a ph_props to a JSON object `{"k":v,...}` with the same encoder the
  * native batch path uses. The WASM shim calls this to build the properties it
- * hands to window.posthog.capture, so a given ph_props yields byte-identical
- * property JSON on both backends - the core of native/wasm parity. */
+ * hands to the descriptor client's capture(), so a given ph_props yields
+ * byte-identical property JSON on both backends - the core of native/wasm
+ * parity. */
 void ph_serialize_props_object(const ph_props *p, ph_strbuf *out) {
     int i, first = 1;
     ph_strbuf_append_char(out, '{');

@@ -309,7 +309,7 @@ void suite_serialize(void) {
     ph_props_set_bool(&p, "alive", 1);
     ph_strbuf_init(&out);
     ph_serialize_props_object(&p, &out);
-    /* Exact string the wasm shim hands to JSON.parse -> window.posthog.capture. */
+    /* Exact string the wasm shim hands to JSON.parse -> descriptor client. */
     CHECK(strcmp(out.data,
                  "{\"weapon\":\"sword\",\"level\":3,\"score\":1.5,\"alive\":true}") == 0);
     ph_strbuf_free(&out);
