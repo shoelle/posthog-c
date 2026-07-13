@@ -19,6 +19,142 @@
 
 /* copy_capped lives in ph_util.c (ph_copy_capped), shared across backends. */
 
+/* Request ids remain unique across shutdown/re-init lifecycles. All allocation
+ * happens while the current instance's g_ph.lock is held; lifecycle calls are
+ * serialized by the public contract. Zero is permanently reserved for UNKNOWN. */
+static uint64_t g_reload_request_id;
+
+/* All reload scheduling/history helpers below require g_ph.lock. */
+static ph_flag_reload_record *reload_record_locked(uint64_t request_id) {
+    int i;
+    for (i = 0; i < PH_FLAG_RELOAD_HISTORY_CAP; i++)
+        if (g_ph.flag_reload_history[i].request_id == request_id)
+            return &g_ph.flag_reload_history[i];
+    return NULL;
+}
+
+static ph_flag_reload_record *alloc_reload_record_locked(uint64_t request_id,
+                                                          uint64_t context_gen) {
+    ph_flag_reload_record *slot = NULL;
+    int i;
+    for (i = 0; i < PH_FLAG_RELOAD_HISTORY_CAP; i++) {
+        ph_flag_reload_record *it = &g_ph.flag_reload_history[i];
+        if (it->request_id == request_id) return it;
+        if (it->request_id == 0) {
+            slot = it;
+            break;
+        }
+        if (it->status != PH_FEATURE_FLAG_RELOAD_PENDING &&
+            (!slot || it->request_id < slot->request_id))
+            slot = it;
+    }
+    if (!slot) return NULL; /* every fixed slot still has a pending request */
+    slot->request_id = request_id;
+    slot->context_gen = context_gen;
+    slot->status = PH_FEATURE_FLAG_RELOAD_PENDING;
+    return slot;
+}
+
+static void mark_reload_locked(uint64_t request_id,
+                               ph_feature_flag_reload_status status) {
+    ph_flag_reload_record *record = reload_record_locked(request_id);
+    if (record && record->status == PH_FEATURE_FLAG_RELOAD_PENDING)
+        record->status = status;
+}
+
+static void mark_context_superseded_locked(uint64_t context_gen) {
+    int i;
+    for (i = 0; i < PH_FLAG_RELOAD_HISTORY_CAP; i++) {
+        ph_flag_reload_record *it = &g_ph.flag_reload_history[i];
+        if (it->request_id && it->status == PH_FEATURE_FLAG_RELOAD_PENDING &&
+            it->context_gen != context_gen)
+            it->status = PH_FEATURE_FLAG_RELOAD_SUPERSEDED;
+    }
+}
+
+static uint64_t next_reload_request_locked(void) {
+    g_reload_request_id++;
+    if (g_reload_request_id == 0) g_reload_request_id++;
+    return g_reload_request_id;
+}
+
+/* Return the queued/in-flight generation for this exact context, or create one.
+ * A stale queued job can be discarded without network I/O; an old in-flight job
+ * is allowed to finish, but its public token has already been superseded. */
+static uint64_t schedule_reload_locked(uint64_t context_gen) {
+    uint64_t generation;
+    if (g_ph.flags_fetch_inflight &&
+        g_ph.flags_fetch_inflight_context_gen == context_gen)
+        return g_ph.flags_fetch_inflight_gen;
+    if (g_ph.flags_refetch && g_ph.flags_refetch_context_gen == context_gen)
+        return g_ph.flags_refetch_gen;
+
+    if (g_ph.flags_refetch) {
+        mark_reload_locked(g_ph.flags_refetch_gen,
+                           PH_FEATURE_FLAG_RELOAD_SUPERSEDED);
+        g_ph.flags_refetch = 0;
+        ph_cond_broadcast(&g_ph.flags_cond);
+    }
+    generation = next_reload_request_locked();
+    g_ph.flags_refetch = 1;
+    g_ph.flags_refetch_gen = generation;
+    g_ph.flags_refetch_context_gen = context_gen;
+    return generation;
+}
+
+/* A flag value is meaningful only for the exact identity + group context that
+ * produced it. Caller holds g_ph.lock, so cache invalidation and public-ticket
+ * supersession are observed atomically. */
+void ph__flags_context_changed_locked(void) {
+    g_ph.flag_count = 0;
+    g_ph.flags_context_gen++;
+    if (g_ph.flags_context_gen == 0) g_ph.flags_context_gen = 1;
+    mark_context_superseded_locked(g_ph.flags_context_gen);
+    if (g_ph.flags_refetch &&
+        g_ph.flags_refetch_context_gen != g_ph.flags_context_gen) {
+        g_ph.flags_refetch = 0;
+    }
+    ph_cond_broadcast(&g_ph.flags_cond);
+}
+
+void ph__flags_request_auto_refresh(void) {
+    if (!g_ph.enabled) return;
+    ph_mutex_lock(&g_ph.lock);
+    (void)schedule_reload_locked(g_ph.flags_context_gen);
+    ph_mutex_unlock(&g_ph.lock);
+    ph__sender_wake();
+}
+
+int ph__flags_take_fetch(uint64_t *generation, uint64_t *context_gen) {
+    int have = 0;
+    ph_mutex_lock(&g_ph.lock);
+    if (g_ph.flags_refetch && !g_ph.flags_fetch_inflight) {
+        if (generation) *generation = g_ph.flags_refetch_gen;
+        if (context_gen) *context_gen = g_ph.flags_refetch_context_gen;
+        g_ph.flags_fetch_inflight = 1;
+        g_ph.flags_fetch_inflight_gen = g_ph.flags_refetch_gen;
+        g_ph.flags_fetch_inflight_context_gen = g_ph.flags_refetch_context_gen;
+        g_ph.flags_refetch = 0;
+        have = 1;
+    }
+    ph_mutex_unlock(&g_ph.lock);
+    return have;
+}
+
+void ph__flags_complete_fetch(uint64_t generation,
+                              ph_feature_flag_reload_status status) {
+    ph_mutex_lock(&g_ph.lock);
+    if (g_ph.flags_fetch_inflight &&
+        g_ph.flags_fetch_inflight_gen == generation) {
+        g_ph.flags_fetch_inflight = 0;
+        g_ph.flags_fetch_inflight_gen = 0;
+        g_ph.flags_fetch_inflight_context_gen = 0;
+    }
+    mark_reload_locked(generation, status);
+    ph_cond_broadcast(&g_ph.flags_cond);
+    ph_mutex_unlock(&g_ph.lock);
+}
+
 /* Caller holds g_ph.lock. */
 static ph_flag *find_locked(const char *key) {
     int i;
@@ -43,32 +179,41 @@ static int quota_limited(const ph_jv *root) {
     return 0;
 }
 
+static ph_feature_flag_reload_status failure_for_context(
+    uint64_t context_gen) {
+    ph_feature_flag_reload_status status = PH_FEATURE_FLAG_RELOAD_FAILED;
+    ph_mutex_lock(&g_ph.lock);
+    if (context_gen != g_ph.flags_context_gen)
+        status = PH_FEATURE_FLAG_RELOAD_SUPERSEDED;
+    ph_mutex_unlock(&g_ph.lock);
+    return status;
+}
+
 /* Apply a response only to the identity/group generation that requested it.
  * A slower, older request must never overwrite a newer user's cache. */
-static void flags_ingest_for_context(const char *json, size_t len,
-                                     uint64_t context_gen) {
+static ph_feature_flag_reload_status flags_ingest_for_context(
+    const char *json, size_t len, uint64_t context_gen) {
     ph_jv *root = ph_jv_parse(json, len);
     const ph_jv *flags;
-    ph_flag *parsed; /* PH_MAX_FLAGS entries on the heap, not ~40 KB of caller
-                      * stack - this runs inline on ph_reload_feature_flags()'s
-                      * thread, which may have a small stack. */
+    ph_flag *parsed; /* PH_MAX_FLAGS entries on the heap, not ~40 KB of sender
+                      * stack; embedders may configure a small worker stack. */
     int parsed_count = 0;
     int partial, i;
-    if (!root) return;
+    if (!root) return failure_for_context(context_gen);
     if (quota_limited(root)) {
         ph_log(PH_LOG_WARN, "flags: quota limited; retaining same-context cache");
         ph_jv_free(root);
-        return;
+        return failure_for_context(context_gen);
     }
     flags = ph_jv_get(root, "flags");
     if (ph_jv_type_of(flags) != PH_JV_OBJ) {
         ph_jv_free(root);
-        return;
+        return failure_for_context(context_gen);
     }
     parsed = malloc(sizeof(*parsed) * PH_MAX_FLAGS);
     if (!parsed) {
         ph_jv_free(root);
-        return;
+        return failure_for_context(context_gen);
     }
 
     partial = ph_jv_bool(ph_jv_get(root, "errorsWhileComputingFlags"));
@@ -99,7 +244,7 @@ static void flags_ingest_for_context(const char *json, size_t len,
         ph_mutex_unlock(&g_ph.lock);
         free(parsed);
         ph_jv_free(root);
-        return;
+        return PH_FEATURE_FLAG_RELOAD_SUPERSEDED;
     }
 
     if (!partial) {
@@ -136,14 +281,16 @@ static void flags_ingest_for_context(const char *json, size_t len,
     ph_mutex_unlock(&g_ph.lock);
     free(parsed);
     ph_jv_free(root);
+    return partial ? PH_FEATURE_FLAG_RELOAD_FAILED
+                   : PH_FEATURE_FLAG_RELOAD_SUCCESS;
 }
 
-void ph__flags_ingest(const char *json, size_t len) {
+ph_feature_flag_reload_status ph__flags_ingest(const char *json, size_t len) {
     uint64_t context_gen;
     ph_mutex_lock(&g_ph.lock);
     context_gen = g_ph.flags_context_gen;
     ph_mutex_unlock(&g_ph.lock);
-    flags_ingest_for_context(json, len, context_gen);
+    return flags_ingest_for_context(json, len, context_gen);
 }
 
 static void flags_url(char *out, size_t cap) {
@@ -152,7 +299,7 @@ static void flags_url(char *out, size_t cap) {
     snprintf(out, cap, "%.*s/flags?v=2", (int)n, g_ph.api_host);
 }
 
-void ph__flags_fetch(void) {
+ph_feature_flag_reload_status ph__flags_fetch(uint64_t expected_context_gen) {
     ph_strbuf body;
     ph_transport t;
     char url[PH_HOST_CAP + 16];
@@ -168,6 +315,11 @@ void ph__flags_fetch(void) {
     if (g_ph.disable_geoip)
         ph_strbuf_append_cstr(&body, ",\"geoip_disable\":true");
     ph_mutex_lock(&g_ph.lock);
+    if (expected_context_gen != g_ph.flags_context_gen) {
+        ph_mutex_unlock(&g_ph.lock);
+        ph_strbuf_free(&body);
+        return PH_FEATURE_FLAG_RELOAD_SUPERSEDED;
+    }
     context_gen = g_ph.flags_context_gen;
     ph_strbuf_append_cstr(&body, ",\"distinct_id\":");
     ph_json_cstr(&body, g_ph.distinct_id);
@@ -206,7 +358,7 @@ void ph__flags_fetch(void) {
 
     if (body.oom) {
         ph_strbuf_free(&body);
-        return;
+        return failure_for_context(context_gen);
     }
 
     flags_url(url, sizeof(url));
@@ -218,23 +370,29 @@ void ph__flags_fetch(void) {
     if (!t.fetch) {
         ph_strbuf_free(&body);
         ph_log(PH_LOG_WARN, "flags: transport has no fetch (https needs TLS on this platform)");
-        return;
+        return failure_for_context(context_gen);
     }
 
     resp = (char *)malloc(PH_FLAGS_RESP_CAP);
     if (!resp) {
         ph_strbuf_free(&body);
-        return;
+        return failure_for_context(context_gen);
     }
     status = t.fetch(t.self, url, body.data ? body.data : "{}", body.len,
                      g_ph.request_timeout_ms, resp, PH_FLAGS_RESP_CAP);
-    if (status >= 200 && status < 300)
-        flags_ingest_for_context(resp, strlen(resp), context_gen);
-    else
+    if (status >= 200 && status < 300) {
+        ph_feature_flag_reload_status outcome =
+            flags_ingest_for_context(resp, strlen(resp), context_gen);
+        free(resp);
+        ph_strbuf_free(&body);
+        return outcome;
+    } else {
         ph_log(PH_LOG_WARN, "flags fetch to %s failed (status %d)", url, status);
+    }
 
     free(resp);
     ph_strbuf_free(&body);
+    return failure_for_context(context_gen);
 }
 
 /* --- accessors + public flag API -------------------------------------- */
@@ -337,23 +495,54 @@ ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
     return ph__flags_get_payload(key, out, cap);
 }
 
-void ph_reload_feature_flags(void) {
-    uint64_t target;
-    if (!g_ph.enabled) return;
-    if (!g_ph.sender_running || ph__in_callback ||
-        ph_thread_is_current(&g_ph.sender)) {
-        ph__flags_fetch();
-        return;
-    }
+ph_result ph_reload_feature_flags_async(uint64_t *request_id) {
+    ph_flag_reload_record *record;
+    uint64_t generation;
+    if (!request_id) return PH_ERR_BADARG;
+    *request_id = 0;
+    if (!g_ph.enabled || !g_ph.sender_running) return PH_ERR_DISABLED;
 
-    ph_mutex_lock(&g_ph.flush_lock);
-    g_ph.flags_refetch = 1;
-    target = ++g_ph.flags_fetch_request_gen;
-    ph_mutex_unlock(&g_ph.flush_lock);
+    ph_mutex_lock(&g_ph.lock);
+    generation = schedule_reload_locked(g_ph.flags_context_gen);
+    record = alloc_reload_record_locked(generation, g_ph.flags_context_gen);
+    if (record) *request_id = generation;
+    ph_mutex_unlock(&g_ph.lock);
     ph__sender_wake();
+    return record ? PH_OK : PH_ERR_FULL;
+}
 
-    ph_mutex_lock(&g_ph.flush_lock);
-    while (g_ph.sender_running && g_ph.flags_fetch_gen < target)
-        ph_cond_timedwait(&g_ph.idle_cond, &g_ph.flush_lock, 100);
-    ph_mutex_unlock(&g_ph.flush_lock);
+ph_feature_flag_reload_status ph_get_feature_flag_reload_status(
+    uint64_t request_id) {
+    ph_flag_reload_record *record;
+    ph_feature_flag_reload_status status = PH_FEATURE_FLAG_RELOAD_UNKNOWN;
+    if (!request_id || !g_ph.enabled) return status;
+    ph_mutex_lock(&g_ph.lock);
+    record = reload_record_locked(request_id);
+    if (record) status = record->status;
+    ph_mutex_unlock(&g_ph.lock);
+    return status;
+}
+
+void ph_reload_feature_flags(void) {
+    ph_feature_flag_reload_status status;
+    uint64_t request_id;
+    for (;;) {
+        if (ph_reload_feature_flags_async(&request_id) != PH_OK) return;
+        /* A sender callback can safely attach to the current job, but waiting
+         * for that same sender to complete it would deadlock. */
+        if (ph__in_callback || ph_thread_is_current(&g_ph.sender)) return;
+
+        ph_mutex_lock(&g_ph.lock);
+        for (;;) {
+            ph_flag_reload_record *record = reload_record_locked(request_id);
+            status = record ? record->status : PH_FEATURE_FLAG_RELOAD_UNKNOWN;
+            if (status != PH_FEATURE_FLAG_RELOAD_PENDING) break;
+            ph_cond_timedwait(&g_ph.flags_cond, &g_ph.lock, 100);
+        }
+        ph_mutex_unlock(&g_ph.lock);
+        if (status != PH_FEATURE_FLAG_RELOAD_SUPERSEDED) return;
+        /* Identity/group inputs changed while this request was pending. Queue
+         * and wait for the successor context so the legacy void API remains a
+         * true blocking refresh for ordinary callers. */
+    }
 }

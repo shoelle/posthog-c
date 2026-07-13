@@ -464,13 +464,6 @@ static int prop_str_copy(const ph_props *p, const char *key, char *out,
     return 0;
 }
 
-static void request_sender_flags_refetch(void) {
-    ph_mutex_lock(&g_ph.flush_lock);
-    g_ph.flags_refetch = 1;
-    g_ph.flags_fetch_request_gen++;
-    ph_mutex_unlock(&g_ph.flush_lock);
-}
-
 static void sync_flag_context_from_control(const ph_event *e,
                                            const ph_props *props,
                                            const char *group_type,
@@ -505,7 +498,7 @@ static void sync_flag_context_from_control(const ph_event *e,
         ph_mutex_unlock(&g_ph.lock);
     }
 
-    if (changed) request_sender_flags_refetch();
+    if (changed) ph__flags_request_auto_refresh();
 }
 
 /* Scrub one event: strip denylisted keys, and (when run_before_send is set) run
@@ -915,8 +908,8 @@ static void sender_main(void *arg) {
     last_stats = ph_now_mono_ns();
 
     for (;;) {
-        int stop, refetch;
-        uint64_t refetch_gen;
+        int stop;
+        uint64_t refetch_gen, refetch_context_gen;
         /* Wake at least as often as the stats interval so on_stats fires on time
          * even while the queue is idle (otherwise we only wake every flush). */
         int wait_ms = g_ph.flush_interval_ms;
@@ -925,18 +918,13 @@ static void sender_main(void *arg) {
         ph_queue_wait(&g_ph.queue, g_ph.flush_at, wait_ms);
         drain(scratch, 0);
         ph_mutex_lock(&g_ph.flush_lock);
-        refetch = g_ph.flags_refetch;
-        refetch_gen = g_ph.flags_fetch_request_gen;
-        g_ph.flags_refetch = 0;
         stop = g_ph.stop;
         ph_mutex_unlock(&g_ph.flush_lock);
-        if (refetch && !stop) {
-            ph__flags_fetch(); /* re-evaluate after scrubbed identity/group context */
-            ph_mutex_lock(&g_ph.flush_lock);
-            if (g_ph.flags_fetch_gen < refetch_gen)
-                g_ph.flags_fetch_gen = refetch_gen;
-            ph_cond_broadcast(&g_ph.idle_cond);
-            ph_mutex_unlock(&g_ph.flush_lock);
+        if (!stop && ph__flags_take_fetch(&refetch_gen,
+                                          &refetch_context_gen)) {
+            ph_feature_flag_reload_status status =
+                ph__flags_fetch(refetch_context_gen);
+            ph__flags_complete_fetch(refetch_gen, status);
         }
         if (g_ph.on_stats && g_ph.stats_interval_ms > 0) {
             uint64_t now = ph_now_mono_ns();

@@ -102,23 +102,6 @@ static void gen_anon_id(char *out) {
     ph_copy_capped(out, PH_DISTINCT_ID_CAP, uuid);
 }
 
-/* Caller holds g_ph.lock. A flag value is meaningful only for the exact
- * identity + group context that produced it. Clear synchronously so a caller
- * can never observe the previous user's value while an async refresh runs. */
-void ph__flags_context_changed_locked(void) {
-    g_ph.flag_count = 0;
-    g_ph.flags_context_gen++;
-    if (g_ph.flags_context_gen == 0) g_ph.flags_context_gen = 1;
-}
-
-static void request_flags_refetch(void) {
-    ph_mutex_lock(&g_ph.flush_lock);
-    g_ph.flags_refetch = 1;
-    g_ph.flags_fetch_request_gen++;
-    ph_mutex_unlock(&g_ph.flush_lock);
-    ph__sender_wake();
-}
-
 void ph_log(ph_log_level level, const char *fmt, ...) {
     char buf[512];
     va_list ap;
@@ -189,6 +172,7 @@ ph_result ph_init(const ph_config *cfg) {
     ph_mutex_init(&g_ph.lock);
     ph_mutex_init(&g_ph.flush_lock);
     ph_cond_init(&g_ph.idle_cond);
+    ph_cond_init(&g_ph.flags_cond);
     ph_props_init(&g_ph.super);
     ph_props_init(&g_ph.flag_person_props);
     atomic_init(&g_ph.seq, 0);
@@ -235,6 +219,7 @@ ph_result ph_init(const ph_config *cfg) {
     }
 
     if (ph_queue_init(&g_ph.queue, g_ph.max_queue) != 0) {
+        ph_cond_destroy(&g_ph.flags_cond);
         ph_cond_destroy(&g_ph.idle_cond);
         ph_mutex_destroy(&g_ph.flush_lock);
         ph_mutex_destroy(&g_ph.lock);
@@ -247,6 +232,7 @@ ph_result ph_init(const ph_config *cfg) {
     if (ph__sender_start() != 0) {
         if (g_ph.transport.destroy) g_ph.transport.destroy(g_ph.transport.self);
         ph_queue_free(&g_ph.queue);
+        ph_cond_destroy(&g_ph.flags_cond);
         ph_cond_destroy(&g_ph.idle_cond);
         ph_mutex_destroy(&g_ph.flush_lock);
         ph_mutex_destroy(&g_ph.lock);
@@ -275,7 +261,7 @@ ph_result ph_init(const ph_config *cfg) {
 
     /* Preload flags so the first frame has answers. One blocking round
      * trip; opt out with preload_flags = 0. */
-    if (cfg->preload_flags) ph__flags_fetch();
+    if (cfg->preload_flags) ph_reload_feature_flags();
     return PH_OK;
 }
 
@@ -292,6 +278,7 @@ void ph_shutdown(void) {
         if (g_ph.transport.destroy) g_ph.transport.destroy(g_ph.transport.self);
         ph_queue_free(&g_ph.queue);
     }
+    ph_cond_destroy(&g_ph.flags_cond);
     ph_cond_destroy(&g_ph.idle_cond);
     ph_mutex_destroy(&g_ph.flush_lock);
     ph_mutex_destroy(&g_ph.lock);
@@ -455,7 +442,7 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
 
     /* Identity changed -> re-evaluate flags. Done on the sender thread so
      * ph_identify never blocks on the network. */
-    request_flags_refetch();
+    ph__flags_request_auto_refresh();
 }
 
 void ph_alias(const char *new_id, const char *old_id) {
@@ -492,7 +479,7 @@ void ph_reset(void) {
     g_ph.group_count = 0;
     ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
-    request_flags_refetch();
+    ph__flags_request_auto_refresh();
 }
 
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
@@ -531,7 +518,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     }
     if (context_changed) ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
-    if (context_changed) request_flags_refetch();
+    if (context_changed) ph__flags_request_auto_refresh();
 
     /* Emit $groupidentify. $group_type/$group_key ride top-level; the set
      * props are bundled under $group_set by the serializer. */

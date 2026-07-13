@@ -127,6 +127,14 @@ typedef struct ph_flag {
     char payload[PH_FLAG_PAYLOAD_CAP];
 } ph_flag;
 
+#define PH_FLAG_RELOAD_HISTORY_CAP 8
+
+typedef struct ph_flag_reload_record {
+    uint64_t request_id;
+    uint64_t context_gen;
+    ph_feature_flag_reload_status status;
+} ph_flag_reload_record;
+
 /* --- SDK context (global singleton) ----------------------------------- */
 
 typedef struct ph_ctx {
@@ -191,6 +199,14 @@ typedef struct ph_ctx {
     ph_flag flags[PH_MAX_FLAGS];
     int flag_count;
     uint64_t flags_context_gen; /* bumped when identity/groups change */
+    ph_cond flags_cond; /* reload completion/context-supersession waiters */
+    ph_flag_reload_record flag_reload_history[PH_FLAG_RELOAD_HISTORY_CAP];
+    int flags_refetch; /* one queued/coalesced fetch job */
+    uint64_t flags_refetch_gen;
+    uint64_t flags_refetch_context_gen;
+    int flags_fetch_inflight;
+    uint64_t flags_fetch_inflight_gen;
+    uint64_t flags_fetch_inflight_context_gen;
 
     /* Timing epoch: initialized once, then sender-corrected. Each event
      * snapshots these fields at enqueue so old queued timestamps don't shift. */
@@ -215,9 +231,6 @@ typedef struct ph_ctx {
     uint64_t shutdown_deadline_mono_ns; /* one network-drain budget for shutdown */
     int sending;         /* a batch is currently in flight */
     int sender_running;
-    int flags_refetch;   /* sender should re-fetch feature flags (set on identify) */
-    uint64_t flags_fetch_request_gen; /* requested sender-side flag fetches */
-    uint64_t flags_fetch_gen; /* completed sender-side flag fetches */
     uint64_t drain_gen;  /* bumped after each full drain; lets ph_flush wait for
                           * a cycle to complete (e.g. an offline replay) even when
                           * the in-memory queue is already empty */
@@ -281,8 +294,8 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                       int profile_mode, int stamp_super_groups,
                       const char *extra, size_t extra_len);
 
-/* Caller holds g_ph.lock. Clears the flag cache and advances the context
- * generation whenever identity, groups, or flag-evaluation props change. */
+/* Caller holds g_ph.lock. Clears the flag cache, advances the context
+ * generation, and supersedes old-context public reload tokens. */
 void ph__flags_context_changed_locked(void);
 
 /* Exception builder with additional internal event flags. Crash replay uses
@@ -302,12 +315,15 @@ int ph__sender_start(void);
 void ph__sender_stop_and_join(void);
 void ph__sender_wake(void);
 
-/* Feature flags (ph_flags.c). ingest parses a /flags/ response into the cache;
- * fetch does the network round-trip then ingest; the accessors read the cache
- * and emit a deduped $feature_flag_called on first read. The public
- * ph_is_feature_enabled / ph_get_feature_flag(_payload) wrappers live there too. */
-void ph__flags_ingest(const char *json, size_t len);
-void ph__flags_fetch(void);
+/* Feature flags (ph_flags.c). Auto requests and public tickets share one
+ * context-coalesced sender job. The sender takes/completes jobs through these
+ * helpers; fetch reports a terminal outcome after parsing/applying /flags/. */
+void ph__flags_request_auto_refresh(void);
+int ph__flags_take_fetch(uint64_t *generation, uint64_t *context_gen);
+void ph__flags_complete_fetch(uint64_t generation,
+                              ph_feature_flag_reload_status status);
+ph_feature_flag_reload_status ph__flags_ingest(const char *json, size_t len);
+ph_feature_flag_reload_status ph__flags_fetch(uint64_t context_gen);
 int ph__flags_is_enabled(const char *key, int fallback);
 ph_result ph__flags_get(const char *key, char *out, int cap);
 ph_result ph__flags_get_payload(const char *key, char *out, int cap);

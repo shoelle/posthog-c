@@ -11,6 +11,9 @@ void mock_set_status(int status); /* what send()/fetch() returns (e.g. 500 to fa
 void mock_set_retry_after(const char *value); /* Retry-After value send() surfaces ("" = none) */
 void mock_set_send_body(const char *body);    /* 2xx response body send() surfaces (e.g. quota notice) */
 void mock_set_flags_response(const char *json); /* body fetch() returns for /flags/ */
+void mock_set_fetch_blocked(int blocked); /* deterministic /flags/ in-flight gate */
+int mock_wait_fetch_count(int count, int timeout_ms);
+int mock_fetch_count(void);
 int mock_batch_count(void);
 const char *mock_batch(int i);  /* body of the i-th captured batch, or NULL */
 const char *mock_last_fetch_url(void);

@@ -7,6 +7,7 @@
 #define MOCK_MAX 128
 
 static ph_mutex g_lock;
+static ph_cond g_fetch_cond;
 static int g_inited;
 static char *g_bodies[MOCK_MAX];
 static int g_count;
@@ -16,10 +17,13 @@ static char g_last_fetch_url[512];
 static char g_last_fetch_body[4096];
 static char g_retry_after[64];
 static char g_send_body[256];
+static int g_fetch_blocked;
+static int g_fetch_count;
 
 static void ensure(void) {
     if (!g_inited) {
         ph_mutex_init(&g_lock);
+        ph_cond_init(&g_fetch_cond);
         g_inited = 1;
     }
 }
@@ -63,6 +67,10 @@ static int mock_fetch(void *self, const char *url, const char *body, size_t len,
     (void)timeout_ms;
     ensure();
     ph_mutex_lock(&g_lock);
+    g_fetch_count++;
+    ph_cond_broadcast(&g_fetch_cond);
+    while (g_fetch_blocked)
+        ph_cond_timedwait(&g_fetch_cond, &g_lock, 100);
     if (url) {
         size_t n = strlen(url);
         if (n >= sizeof(g_last_fetch_url)) n = sizeof(g_last_fetch_url) - 1;
@@ -127,9 +135,46 @@ void mock_reset(void) {
     g_last_fetch_body[0] = '\0';
     g_retry_after[0] = '\0';
     g_send_body[0] = '\0';
+    g_fetch_blocked = 0;
+    g_fetch_count = 0;
+    ph_cond_broadcast(&g_fetch_cond);
     free(g_flags_response);
     g_flags_response = NULL;
     ph_mutex_unlock(&g_lock);
+}
+
+void mock_set_fetch_blocked(int blocked) {
+    ensure();
+    ph_mutex_lock(&g_lock);
+    g_fetch_blocked = blocked ? 1 : 0;
+    if (!g_fetch_blocked) ph_cond_broadcast(&g_fetch_cond);
+    ph_mutex_unlock(&g_lock);
+}
+
+int mock_wait_fetch_count(int count, int timeout_ms) {
+    int elapsed = 0;
+    int reached;
+    ensure();
+    ph_mutex_lock(&g_lock);
+    while (g_fetch_count < count && elapsed < timeout_ms) {
+        int wait_ms = timeout_ms - elapsed;
+        if (wait_ms > 10) wait_ms = 10;
+        if (wait_ms <= 0) break;
+        ph_cond_timedwait(&g_fetch_cond, &g_lock, wait_ms);
+        elapsed += wait_ms;
+    }
+    reached = g_fetch_count >= count;
+    ph_mutex_unlock(&g_lock);
+    return reached;
+}
+
+int mock_fetch_count(void) {
+    int count;
+    ensure();
+    ph_mutex_lock(&g_lock);
+    count = g_fetch_count;
+    ph_mutex_unlock(&g_lock);
+    return count;
 }
 
 void mock_set_status(int status) {
