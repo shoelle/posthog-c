@@ -36,6 +36,25 @@ static int def_int(int v, int fallback) { return v > 0 ? v : fallback; }
 #define PH_CONFIG_MAX_BATCH 10000
 #define PH_CONFIG_MAX_QUEUE 100000
 
+/* Inspect at most the public event-name capacity. A result equal to the cap
+ * means the input did not terminate in the portion we accept. */
+static size_t bounded_event_name_len(const char *name) {
+    size_t n = 0;
+    while (n < PH_EVENT_NAME_CAP && name[n]) n++;
+    return n;
+}
+
+/* Copy a caller-supplied capture name into a guaranteed-terminated local
+ * buffer. Returns nonzero when the accepted name was truncated. */
+static int copy_capture_event_name(char out[PH_EVENT_NAME_CAP],
+                                   const char *name) {
+    size_t n = bounded_event_name_len(name);
+    size_t accepted = n < PH_EVENT_NAME_CAP ? n : PH_EVENT_NAME_CAP - 1;
+    if (accepted) memcpy(out, name, accepted);
+    out[accepted] = '\0';
+    return n == PH_EVENT_NAME_CAP;
+}
+
 static int string_over_cap(const char *s, size_t cap) {
     return s && strlen(s) >= cap;
 }
@@ -300,17 +319,18 @@ static int rate_limit_admit(int kind, uint64_t mono) {
     return 1;
 }
 
-/* Resolve whether this event suppresses its person profile: profile_mode 1
- * forces anonymous, 0 forces a profile, -1 derives from the configured policy
- * and current identity. Caller holds g_ph.lock. */
+/* Resolve whether this event suppresses its person profile: PH_NEVER is an
+ * absolute policy; otherwise profile_mode 1 forces anonymous, 0 forces a
+ * profile, and -1 derives from policy + current identity. Caller holds lock. */
 static int derive_no_profile(int profile_mode) {
+    if (g_ph.person_profiles == PH_NEVER) return 1;
     if (profile_mode == 1) return 1;
     if (profile_mode == 0) return 0;
-    return (g_ph.person_profiles == PH_NEVER) ||
-           (g_ph.person_profiles == PH_IDENTIFIED_ONLY && !g_ph.identified);
+    return g_ph.person_profiles == PH_IDENTIFIED_ONLY && !g_ph.identified;
 }
 
-/* profile_mode: -1 derive from policy, 0 force profile, 1 force anonymous.
+/* profile_mode: -1 derive from policy, 0 request a profile, 1 force anonymous;
+ * the absolute PH_NEVER policy overrides every mode.
  * `extra`/`extra_len`: optional pre-packed entries (e.g. the $exception_list
  * rawjson) appended after props/super/groups; pass NULL/0 when unused. */
 ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
@@ -337,7 +357,7 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
             ph_mutex_unlock(&g_ph.lock);
             return PH_ERR_RATE_LIMITED;
         }
-        size_t name_len = strlen(name);
+        size_t name_len = bounded_event_name_len(name);
         size_t did_len = strlen(did);
         size_t off, bl;
         int no_profile;
@@ -399,12 +419,14 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
 /* --- public capture surface ------------------------------------------- */
 
 ph_result ph_capture(const char *event, const ph_props *props) {
+    char capped_event[PH_EVENT_NAME_CAP];
     ph_result r;
     int truncated;
     if (!g_ph.enabled) return PH_ERR_DISABLED;
     if (!event || !event[0]) return PH_ERR_BADARG;
-    truncated = strlen(event) >= PH_EVENT_NAME_CAP;
-    r = ph__submit_event(PH_EV_CAPTURE, 0, event, NULL, props, -1, 1, NULL, 0);
+    truncated = copy_capture_event_name(capped_event, event);
+    r = ph__submit_event(PH_EV_CAPTURE, 0, capped_event, NULL, props,
+                         -1, 1, NULL, 0);
     return r == PH_OK && truncated ? PH_ERR_TRUNCATED : r;
 }
 
@@ -426,7 +448,7 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     g_ph.flag_person_props = person;
     ph__flags_context_changed_locked();
     ph_mutex_unlock(&g_ph.lock);
-    /* $identify builds a profile regardless of policy (profile_mode = 0). */
+    /* $identify builds a profile unless PH_NEVER is the absolute policy. */
     ph__submit_event(PH_EV_IDENTIFY, 0, "$identify", distinct_id, set_props, 0, 0, NULL, 0);
 
     /* Identity changed -> re-evaluate flags. Done on the sender thread so

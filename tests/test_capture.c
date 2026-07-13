@@ -136,6 +136,39 @@ void suite_capture(void) {
         CHECK_CONTAINS(mock_batch(0), "\"plan\":\"pro\"");
         CHECK_CONTAINS(mock_batch(0), "\"distinct_id\":\"acct-777\"");
         CHECK_CONTAINS(mock_batch(0), "\"event\":\"after_identify\"");
+        CHECK_NOT_CONTAINS(mock_batch(0), "\"$process_person_profile\":false");
+        ph_shutdown();
+    }
+
+    /* --- PH_NEVER also suppresses profiles on identity/control events --- */
+    {
+        ph_config cfg;
+        const char *body;
+        ph_config_defaults(&cfg);
+        cfg.api_key = "phc_never";
+        cfg.api_host = "http://127.0.0.1:9/ingest";
+        cfg.distinct_id = "anon-never";
+        cfg.flush_at = 100000;
+        cfg.flush_interval_ms = 60000;
+        cfg.preload_flags = 0;
+        cfg.person_profiles = PH_NEVER;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+
+        ph_identify("acct-never", NULL);
+        ph_alias("alias-never", "acct-never");
+        ph_group("company", "never-co", NULL);
+        ph_capture("after_never_controls", NULL);
+        ph_flush(2000);
+
+        CHECK(mock_batch_count() == 1);
+        body = mock_batch(0);
+        CHECK_CONTAINS(body, "\"event\":\"$identify\"");
+        CHECK_CONTAINS(body, "\"event\":\"$create_alias\"");
+        CHECK_CONTAINS(body, "\"event\":\"$groupidentify\"");
+        CHECK_CONTAINS(body, "\"event\":\"after_never_controls\"");
+        CHECK(count_text(body, "\"$process_person_profile\":false") == 4);
         ph_shutdown();
     }
 
@@ -258,12 +291,24 @@ void suite_capture(void) {
         CHECK(ph_capture(NULL, NULL) == PH_ERR_BADARG);
         CHECK(ph_capture("", NULL) == PH_ERR_BADARG);
         {
-            char long_name[PH_EVENT_NAME_CAP + 20];
-            memset(long_name, 'e', sizeof(long_name) - 1);
+            char fit_name[PH_EVENT_NAME_CAP];
+            char long_name[PH_EVENT_NAME_CAP + 1];
+            char fit_json[PH_EVENT_NAME_CAP + 16];
+            char long_json[PH_EVENT_NAME_CAP + 16];
+            memset(fit_name, 'f', sizeof(fit_name) - 1);
+            fit_name[sizeof(fit_name) - 1] = '\0';
+            memset(long_name, 't', sizeof(long_name) - 1);
             long_name[sizeof(long_name) - 1] = '\0';
+            snprintf(fit_json, sizeof(fit_json), "\"event\":\"%s\"", fit_name);
+            snprintf(long_json, sizeof(long_json),
+                     "\"event\":\"%.*s\"", PH_EVENT_NAME_CAP - 1, long_name);
+
+            CHECK(ph_capture(fit_name, NULL) == PH_OK);
             CHECK(ph_capture(long_name, NULL) == PH_ERR_TRUNCATED);
+            ph_flush(2000);
+            CHECK_CONTAINS(mock_batch(0), fit_json);
+            CHECK_CONTAINS(mock_batch(0), long_json);
         }
-        ph_flush(2000);
         ph_shutdown();
         CHECK(ph_capture("after_shutdown", NULL) == PH_ERR_DISABLED); /* SDK off */
     }

@@ -85,7 +85,7 @@ typedef enum ph_result {
 typedef enum ph_person_profiles {
     PH_IDENTIFIED_ONLY = 0, /* default: anonymous until ph_identify() */
     PH_ALWAYS = 1,
-    PH_NEVER = 2
+    PH_NEVER = 2 /* never create a profile, including for control events */
 } ph_person_profiles;
 
 /* --- Diagnostics log levels ------------------------------------------- */
