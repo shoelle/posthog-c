@@ -208,9 +208,10 @@ typedef struct ph_ctx {
      * condition variable; flush_lock/idle_cond only coordinate the drained
      * handshake that ph_flush() blocks on. */
     ph_thread sender;
-    ph_mutex flush_lock; /* guards stop, sending, sender_running */
+    ph_mutex flush_lock; /* guards stop/deadline, sending, sender_running */
     ph_cond idle_cond;   /* signaled when the sender drains to idle */
     int stop;            /* shutdown requested */
+    uint64_t shutdown_deadline_mono_ns; /* one network-drain budget for shutdown */
     int sending;         /* a batch is currently in flight */
     int sender_running;
     int flags_refetch;   /* sender should re-fetch feature flags (set on identify) */

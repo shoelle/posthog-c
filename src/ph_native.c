@@ -40,17 +40,48 @@ static void build_batch_url(char *out, size_t cap) {
     snprintf(out, cap, "%.*s/batch/", (int)n, g_ph.api_host);
 }
 
+/* A shutdown gets one monotonic network budget, not a fresh timeout for every
+ * queued or spilled batch. Zero means normal operation (no shutdown budget). */
+static uint64_t shutdown_deadline(void) {
+    uint64_t deadline;
+    ph_mutex_lock(&g_ph.flush_lock);
+    deadline = g_ph.stop ? g_ph.shutdown_deadline_mono_ns : 0;
+    ph_mutex_unlock(&g_ph.flush_lock);
+    return deadline;
+}
+
+static int shutdown_deadline_expired(void) {
+    uint64_t deadline = shutdown_deadline();
+    return deadline != 0 && ph_now_mono_ns() >= deadline;
+}
+
 /* POST one already-serialized batch body. Fills `meta` (Retry-After, ...) when
  * non-NULL. Returns the HTTP-ish status. */
 static int post_body(const char *body, size_t len, ph_send_meta *meta) {
     char url[PH_HOST_CAP + 16];
     ph_transport t;
+    uint64_t deadline;
+    int timeout_ms = g_ph.request_timeout_ms;
     build_batch_url(url, sizeof(url));
     ph_mutex_lock(&g_ph.flush_lock);
     t = g_ph.transport;
+    deadline = g_ph.stop ? g_ph.shutdown_deadline_mono_ns : 0;
     ph_mutex_unlock(&g_ph.flush_lock);
     if (!t.send) return -1;
-    return t.send(t.self, url, body, len, g_ph.request_timeout_ms, meta);
+    if (deadline != 0) {
+        uint64_t now = ph_now_mono_ns();
+        uint64_t remaining_ms;
+        if (now >= deadline) return -1;
+        remaining_ms = (deadline - now) / 1000000ull;
+        if (remaining_ms == 0) return -1;
+        if (remaining_ms < (uint64_t)timeout_ms)
+            timeout_ms = (int)remaining_ms;
+    }
+    /* A send that entered the transport before stop was requested cannot have
+     * its timeout shortened here. In particular, an in-progress libc resolver
+     * may not be cancellable. Once it returns, the shared deadline prevents any
+     * later batch from receiving another full request_timeout_ms. */
+    return t.send(t.self, url, body, len, timeout_ms, meta);
 }
 
 /* PostHog signals event quota as a 2xx body: {"status":1,"quota_limited":[...]}.
@@ -330,7 +361,7 @@ static void offline_replay(void) {
     int stopped = 0;
     ph_strbuf keep;
 
-    if (!g_ph.offline_path[0]) return;
+    if (!g_ph.offline_path[0] || shutdown_deadline_expired()) return;
     offline_spill_path(path, sizeof(path));
     sz = file_size(path);
     if (sz <= 0) return;
@@ -354,6 +385,7 @@ static void offline_replay(void) {
             size_t linelen = i - line_start;
             int events = batch_event_count(buf + line_start, linelen);
             int keep_line;
+            if (!stopped && shutdown_deadline_expired()) stopped = 1;
             if (stopped) {
                 keep_line = 1; /* never attempted - keep for a later drain */
             } else if (g_ph.max_batch_bytes > 0 &&
@@ -609,20 +641,21 @@ static void spill_batch(ph_event *evs, int n) {
     persist_run(evs, n);
 }
 
-static void spill_queued(ph_event *scratch) {
-    int spilled = 0;
+static void settle_queued(ph_event *scratch) {
+    int dropped = 0;
     for (;;) {
         int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
         if (n == 0) break;
         if (g_ph.offline_path[0]) {
             spill_batch(scratch, n);
         } else {
-            spilled += n;
+            atomic_fetch_add(&g_ph.st_failed, (uint_least64_t)n);
+            dropped += n;
         }
     }
-    if (spilled > 0)
-        ph_log(PH_LOG_WARN, "rate-limited shutdown dropped %d held events "
-               "(set offline_path to persist)", spilled);
+    if (dropped > 0)
+        ph_log(PH_LOG_WARN, "shutdown dropped %d unsent events "
+               "(set offline_path to persist)", dropped);
 }
 
 /* Exponential backoff between batch-POST retries: PH_RETRY_BASE_MS << attempt,
@@ -751,6 +784,11 @@ static int send_run(ph_event *evs, int n) {
     int blocked;
     int i, has_crash_replay = 0;
 
+    if (shutdown_deadline_expired()) {
+        persist_run(evs, n);
+        return 0;
+    }
+
     for (i = 0; i < n; i++)
         if (evs[i].flags & PH_EVF_CRASH_REPLAY) {
             has_crash_replay = 1;
@@ -805,20 +843,27 @@ static void drain(ph_event *scratch, int final) {
     /* Under server backpressure (429/Retry-After) hold everything: no replay,
      * no sends. Events stay in the bounded ring (drop-oldest on overflow), so
      * we neither block the caller nor waste a request against the throttle. */
-    if (!ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) {
+    if (!ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()) &&
+        !shutdown_deadline_expired()) {
         offline_replay();
         for (;;) {
+            if (shutdown_deadline_expired()) {
+                settle_queued(scratch);
+                break;
+            }
             int n = ph_queue_pop_batch(&g_ph.queue, scratch, g_ph.max_batch);
             if (n == 0) break;
             send_batch(scratch, n);
             /* A batch just tripped the limiter - stop, hold the rest queued. */
             if (ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns())) break;
         }
-    } else if (final) {
+    }
+    if (shutdown_deadline_expired() ||
+        (final && ph_ratelimit_blocked(&g_ph.rl, ph_now_mono_ns()))) {
         /* Respect server backpressure on shutdown. If the host provided an
          * offline queue, persist held in-memory events instead of freeing them
          * with the queue; otherwise they are dropped with a diagnostic. */
-        spill_queued(scratch);
+        settle_queued(scratch);
     }
 
     ph_mutex_lock(&g_ph.flush_lock);
@@ -883,8 +928,9 @@ static void sender_main(void *arg) {
         refetch = g_ph.flags_refetch;
         refetch_gen = g_ph.flags_fetch_request_gen;
         g_ph.flags_refetch = 0;
+        stop = g_ph.stop;
         ph_mutex_unlock(&g_ph.flush_lock);
-        if (refetch) {
+        if (refetch && !stop) {
             ph__flags_fetch(); /* re-evaluate after scrubbed identity/group context */
             ph_mutex_lock(&g_ph.flush_lock);
             if (g_ph.flags_fetch_gen < refetch_gen)
@@ -921,6 +967,7 @@ static void sender_main(void *arg) {
 int ph__sender_start(void) {
     ph_event *scratch;
     g_ph.stop = 0;
+    g_ph.shutdown_deadline_mono_ns = 0;
     g_ph.sending = 0;
     ph_ratelimit_init(&g_ph.rl);
     if ((size_t)g_ph.max_batch > (size_t)-1 / sizeof(ph_event)) return -1;
@@ -937,8 +984,14 @@ int ph__sender_start(void) {
 }
 
 void ph__sender_stop_and_join(void) {
+    uint64_t now, budget;
     if (!g_ph.sender_running) return;
+    now = ph_now_mono_ns();
+    budget = (uint64_t)g_ph.request_timeout_ms * 1000000ull;
     ph_mutex_lock(&g_ph.flush_lock);
+    g_ph.shutdown_deadline_mono_ns = UINT64_MAX - now < budget
+                                         ? UINT64_MAX
+                                         : now + budget;
     g_ph.stop = 1;
     ph_mutex_unlock(&g_ph.flush_lock);
     ph_queue_wake(&g_ph.queue); /* break the wait so it sees stop */

@@ -70,6 +70,195 @@ static int any_batch_contains(const char *needle) {
     return 0;
 }
 
+enum { SHUTDOWN_BUDGET_MS = 40 };
+
+typedef struct shutdown_transport {
+    atomic_int entered;
+    atomic_int release;
+    int calls;
+    int timeouts[8];
+    int status;
+} shutdown_transport;
+
+/* Model the documented non-cancellable part of a request (notably a libc DNS
+ * resolver): the send remains in flight until the test releases it, even after
+ * shutdown has started and its network-drain budget has elapsed. */
+static int shutdown_send(void *self, const char *url, const char *body,
+                         size_t body_len, int timeout_ms, ph_send_meta *meta) {
+    shutdown_transport *t = (shutdown_transport *)self;
+    int call = t->calls++;
+    (void)url;
+    (void)body;
+    (void)body_len;
+    (void)meta;
+    if (call < (int)(sizeof(t->timeouts) / sizeof(t->timeouts[0])))
+        t->timeouts[call] = timeout_ms;
+    atomic_store(&t->entered, 1);
+    while (!atomic_load(&t->release)) ph_sleep_ms(1);
+    return t->status;
+}
+
+static void shutdown_transport_install(shutdown_transport *state, int status) {
+    ph_transport t;
+    memset(state, 0, sizeof(*state));
+    atomic_init(&state->entered, 0);
+    atomic_init(&state->release, 0);
+    state->status = status;
+    memset(&t, 0, sizeof(t));
+    t.send = shutdown_send;
+    t.self = state;
+    ph__set_transport(&t);
+}
+
+static int wait_for_atomic(atomic_int *value) {
+    int i;
+    for (i = 0; i < 2000; i++) {
+        if (atomic_load(value)) return 1;
+        ph_sleep_ms(1);
+    }
+    return 0;
+}
+
+static int wait_for_shutdown_request(void) {
+    int i;
+    for (i = 0; i < 2000; i++) {
+        int stop;
+        ph_mutex_lock(&g_ph.flush_lock);
+        stop = g_ph.stop;
+        ph_mutex_unlock(&g_ph.flush_lock);
+        if (stop) return 1;
+        ph_sleep_ms(1);
+    }
+    return 0;
+}
+
+static void stop_sender_thread(void *arg) {
+    (void)arg;
+    ph__sender_stop_and_join();
+}
+
+/* Stop on a second thread because the sender is deliberately blocked inside
+ * the transport. Let the one shutdown deadline expire, then release that
+ * already-in-flight call and wait for shutdown to settle everything behind it. */
+static void stop_after_budget(shutdown_transport *state) {
+    ph_thread stopper;
+    int entered = wait_for_atomic(&state->entered);
+    int started, stop_seen;
+    CHECK_MSG(entered, "sender did not enter the blocking transport");
+    if (!entered) {
+        atomic_store(&state->release, 1);
+        ph__sender_stop_and_join();
+        return;
+    }
+    started = ph_thread_start(&stopper, stop_sender_thread, NULL) == 0;
+    CHECK_MSG(started, "could not start shutdown helper thread");
+    if (!started) {
+        atomic_store(&state->release, 1);
+        ph__sender_stop_and_join();
+        return;
+    }
+    stop_seen = wait_for_shutdown_request();
+    CHECK_MSG(stop_seen, "shutdown helper did not publish the stop deadline");
+    if (stop_seen) ph_sleep_ms(SHUTDOWN_BUDGET_MS + 20);
+    atomic_store(&state->release, 1);
+    ph_thread_join(&stopper);
+}
+
+static void init_shutdown_sdk(const char *offline_path) {
+    ph_config cfg;
+    ph_config_defaults(&cfg);
+    cfg.api_key = "phc_shutdown";
+    cfg.api_host = "http://127.0.0.1:9/ingest";
+    cfg.distinct_id = "anon-shutdown";
+    cfg.flush_at = 1;
+    cfg.flush_interval_ms = 60000;
+    cfg.max_batch = 1;
+    cfg.request_timeout_ms = SHUTDOWN_BUDGET_MS;
+    cfg.max_retries = 0;
+    cfg.preload_flags = 0;
+    cfg.enabled = 1;
+    cfg.offline_path = offline_path;
+    CHECK(ph_init(&cfg) == PH_OK);
+}
+
+static void test_bounded_shutdown(void) {
+    char dir[256], path[300];
+    shutdown_transport transport;
+    char *content;
+    size_t clen;
+
+    temp_dir(dir, sizeof(dir));
+    snprintf(path, sizeof(path), "%s/%s", dir, PH_OFFLINE_FILENAME);
+    remove(path);
+
+    /* Multi-batch memory drain with no disk queue: the in-flight request may
+     * return after the deadline, but no second request starts. The attempted
+     * batch and every deadline-dropped sibling are all counted as failures. */
+    init_shutdown_sdk(NULL);
+    shutdown_transport_install(&transport, -1);
+    ph_capture("shutdown_drop_a", NULL);
+    ph_capture("shutdown_drop_b", NULL);
+    ph_capture("shutdown_drop_c", NULL);
+    ph__sender_wake();
+    stop_after_budget(&transport);
+    CHECK_MSG(transport.calls == 1, "expected one in-flight POST, got %d",
+              transport.calls);
+    if (transport.calls > 0)
+        CHECK(transport.timeouts[0] == SHUTDOWN_BUDGET_MS);
+    CHECK(ph_queue_size(&g_ph.queue) == 0);
+    CHECK_MSG(atomic_load(&g_ph.st_failed) == 3,
+              "expected all 3 shutdown drops accounted, got %llu",
+              (unsigned long long)atomic_load(&g_ph.st_failed));
+    CHECK(ph_dropped_events() == 3);
+    ph_shutdown();
+
+    /* The same expired memory drain is lossless with offline_path: the failed
+     * in-flight batch and the two untried batches are persisted, not failed. */
+    init_shutdown_sdk(dir);
+    shutdown_transport_install(&transport, -1);
+    ph_capture("shutdown_persist_a", NULL);
+    ph_capture("shutdown_persist_b", NULL);
+    ph_capture("shutdown_persist_c", NULL);
+    ph__sender_wake();
+    stop_after_budget(&transport);
+    CHECK_MSG(transport.calls == 1, "expected one in-flight POST, got %d",
+              transport.calls);
+    CHECK(atomic_load(&g_ph.st_failed) == 0);
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0,
+              "expected shutdown batches persisted to the offline queue");
+    if (content) {
+        CHECK_CONTAINS(content, "shutdown_persist_a");
+        CHECK_CONTAINS(content, "shutdown_persist_b");
+        CHECK_CONTAINS(content, "shutdown_persist_c");
+        free(content);
+    }
+    ph_shutdown();
+
+    /* Replay shares the same deadline. A request that was already in flight is
+     * allowed to report success after expiry; later spill lines stay on disk
+     * and, crucially, do not each receive a fresh request timeout. */
+    init_shutdown_sdk(dir);
+    shutdown_transport_install(&transport, 200);
+    ph__sender_wake();
+    stop_after_budget(&transport);
+    CHECK_MSG(transport.calls == 1, "expected one offline replay POST, got %d",
+              transport.calls);
+    CHECK(atomic_load(&g_ph.st_sent) == 1);
+    CHECK(atomic_load(&g_ph.st_failed) == 0);
+    content = read_file(path, &clen);
+    CHECK_MSG(content != NULL && clen > 0,
+              "expected untried replay batches to remain persisted");
+    if (content) {
+        CHECK_NOT_CONTAINS(content, "shutdown_persist_a");
+        CHECK_CONTAINS(content, "shutdown_persist_b");
+        CHECK_CONTAINS(content, "shutdown_persist_c");
+        free(content);
+    }
+    ph_shutdown();
+    remove(path);
+}
+
 void suite_offline(void) {
     char dir[256], path[300];
     ph_config cfg;
@@ -248,4 +437,5 @@ void suite_offline(void) {
         remove(blocker_spill);
         RMDIR(blocker);
     }
+    test_bounded_shutdown();
 }
