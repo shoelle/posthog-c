@@ -6,7 +6,7 @@
  * makes it directly unit-testable and is what native/wasm parity is asserted
  * against - both backends must produce the same event shape.
  *
- * Envelope (confirmed against the capture API and the customer's reference):
+ * Envelope (confirmed against the capture API):
  *   {"api_key":"...","historical_migration":false,"batch":[ <event>, ... ]}
  * Each <event>:
  *   {"event":"...","timestamp":"ISO-8601","uuid":"...","properties":{ ... }}
@@ -109,9 +109,18 @@ static int key_is(const char *key, size_t klen, const char *lit) {
     return klen == strlen(lit) && memcmp(key, lit, klen) == 0;
 }
 
+static int key_is_sdk_owned_top_level(const char *key, size_t klen) {
+    return key_is(key, klen, "distinct_id") ||
+           key_is(key, klen, "$lib") ||
+           key_is(key, klen, "$lib_version") ||
+           key_is(key, klen, "$lib_backend") ||
+           key_is(key, klen, "$process_person_profile");
+}
+
 /* Emit every scalar (non-group) entry as a top-level "key":value pair. */
 static void emit_scalar_entries(ph_strbuf *out, int *first, const char *blob,
-                                size_t blob_len, int skip_geoip_disable) {
+                                size_t blob_len, int skip_geoip_disable,
+                                int skip_sdk_owned) {
     const char *cur = blob, *end = blob + blob_len;
     unsigned char type;
     const char *key, *val;
@@ -119,6 +128,7 @@ static void emit_scalar_entries(ph_strbuf *out, int *first, const char *blob,
     while (ph_blob_next(&cur, end, &type, &key, &klen, &val, &vlen)) {
         if (type == PH_PK_GROUP) continue;
         if (skip_geoip_disable && key_is(key, klen, "$geoip_disable")) continue;
+        if (skip_sdk_owned && key_is_sdk_owned_top_level(key, klen)) continue;
         comma(out, first);
         ph_json_str(out, key, klen);
         ph_strbuf_append_char(out, ':');
@@ -274,7 +284,7 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
             ph_strbuf_append_cstr(out, "\"$set\":{");
             {
                 int sf = 1;
-                emit_scalar_entries(out, &sf, blob, e->blob_len, 0);
+                emit_scalar_entries(out, &sf, blob, e->blob_len, 0, 0);
             }
             ph_strbuf_append_char(out, '}');
             break;
@@ -286,7 +296,7 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
             /* CAPTURE / EXCEPTION / ALIAS: user + super props top-level, plus
              * any group-scoping entries under $groups. */
             emit_scalar_entries(out, &first, blob, e->blob_len,
-                                ctx->disable_geoip);
+                                ctx->disable_geoip, 1);
             emit_groups(out, &first, blob, e->blob_len);
             break;
     }

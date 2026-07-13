@@ -84,6 +84,22 @@ static int try_disable_geoip(const char *event, ph_props *props, void *user) {
     return 1;
 }
 
+static void set_sdk_owned_attempts(ph_props *props, const char *source) {
+    ph_props_set_str(props, "distinct_id", source);
+    ph_props_set_str(props, "$lib", source);
+    ph_props_set_str(props, "$lib_version", source);
+    ph_props_set_str(props, "$lib_backend", source);
+    ph_props_set_bool(props, "$process_person_profile", 1);
+}
+
+static int try_override_sdk_owned(const char *event, ph_props *props,
+                                  void *user) {
+    (void)event;
+    (void)user;
+    set_sdk_owned_attempts(props, "hook-override");
+    return 1;
+}
+
 typedef struct scrub_state {
     int calls;
     int sender_calls;
@@ -181,6 +197,66 @@ void suite_scrub(void) {
         ph_flush(2000);
         CHECK_NOT_CONTAINS(mock_batch(0), "\"$geoip_disable\":false");
         CHECK(count_occurrences(mock_batch(0), "\"$geoip_disable\":true") == 1);
+        ph_shutdown();
+    }
+
+    /* --- caller and super props cannot override SDK-owned wire fields --- */
+    {
+        ph_config cfg;
+        ph_props super, event;
+        const char *batch;
+        base_cfg(&cfg);
+        start(&cfg);
+        ph_props_init(&super);
+        set_sdk_owned_attempts(&super, "super-override");
+        ph_register(&super);
+        ph_capture("owned_from_super", NULL);
+        ph_props_init(&event);
+        set_sdk_owned_attempts(&event, "caller-override");
+        ph_capture("owned_from_caller", &event);
+        ph_flush(2000);
+        batch = mock_batch(0);
+        CHECK(count_occurrences(batch, "\"distinct_id\":") == 2);
+        CHECK(count_occurrences(batch, "\"distinct_id\":\"anon-s\"") == 2);
+        CHECK(count_occurrences(batch, "\"$lib\":\"posthog-c\"") == 2);
+        CHECK(count_occurrences(batch, "\"$lib_version\":\"0.1.0\"") == 2);
+        CHECK(count_occurrences(batch, "\"$lib_backend\":\"native\"") == 2);
+        CHECK(count_occurrences(batch,
+                                "\"$process_person_profile\":false") == 2);
+        CHECK_NOT_CONTAINS(batch, "super-override");
+        CHECK_NOT_CONTAINS(batch, "caller-override");
+        ph_shutdown();
+    }
+
+    /* --- denylist and before_send cannot remove or replace SDK fields --- */
+    {
+        ph_config cfg;
+        ph_props event;
+        const char *batch;
+        static const char *deny[] = {
+            "distinct_id", "$lib", "$lib_version", "$lib_backend",
+            "$process_person_profile"
+        };
+        base_cfg(&cfg);
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 5;
+        cfg.before_send = try_override_sdk_owned;
+        start(&cfg);
+        ph_props_init(&event);
+        set_sdk_owned_attempts(&event, "caller-before-denylist");
+        ph_capture("owned_after_scrub", &event);
+        ph_flush(2000);
+        batch = mock_batch(0);
+        CHECK(count_occurrences(batch, "\"distinct_id\":") == 1);
+        CHECK(count_occurrences(batch, "\"distinct_id\":\"anon-s\"") == 1);
+        CHECK(count_occurrences(batch, "\"$lib\":\"posthog-c\"") == 1);
+        CHECK(count_occurrences(batch, "\"$lib_version\":\"0.1.0\"") == 1);
+        CHECK(count_occurrences(batch, "\"$lib_backend\":\"native\"") == 1);
+        CHECK(count_occurrences(batch,
+                                "\"$process_person_profile\":false") == 1);
+        CHECK_NOT_CONTAINS(batch, "caller-before-denylist");
+        CHECK_NOT_CONTAINS(batch, "hook-override");
+        CHECK_NOT_CONTAINS(batch, "\"$process_person_profile\":true");
         ph_shutdown();
     }
 

@@ -49,6 +49,14 @@ static int count_occurrences(const char *hay, const char *needle) {
     return n;
 }
 
+static void set_sdk_owned_attempts(ph_props *p) {
+    ph_props_set_str(p, "distinct_id", "shadow-distinct");
+    ph_props_set_str(p, "$lib", "shadow-lib");
+    ph_props_set_str(p, "$lib_version", "shadow-version");
+    ph_props_set_str(p, "$lib_backend", "shadow-backend");
+    ph_props_set_bool(p, "$process_person_profile", 1);
+}
+
 void suite_serialize(void) {
     ph_ctx c;
     ph_event e;
@@ -106,6 +114,62 @@ void suite_serialize(void) {
     CHECK_CONTAINS(out.data, "\"uuid\":\"");
     CHECK_NOT_CONTAINS(out.data, "$geoip_disable");
     ph_strbuf_free(&out);
+
+    /* --- SDK-owned top-level fields cannot be duplicated or overridden --- */
+    {
+        ph_event evs[3];
+        const int kinds[3] = {PH_EV_CAPTURE, PH_EV_EXCEPTION, PH_EV_ALIAS};
+        const char *names[3] = {"owned_capture", "$exception", "$create_alias"};
+        int i;
+        setup_ctx(&c);
+        ph_props_init(&p);
+        set_sdk_owned_attempts(&p);
+        for (i = 0; i < 3; i++)
+            build_event(&evs[i], kinds[i], PH_EVF_NO_PROFILE, names[i],
+                        "wire-distinct", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, evs, 3, &out);
+        CHECK(count_occurrences(out.data, "\"distinct_id\":") == 3);
+        CHECK(count_occurrences(out.data, "\"distinct_id\":\"wire-distinct\"") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib\":") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib\":\"posthog-c\"") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib_version\":") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib_version\":\"0.1.0\"") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib_backend\":") == 3);
+        CHECK(count_occurrences(out.data, "\"$lib_backend\":\"native\"") == 3);
+        CHECK(count_occurrences(out.data, "\"$process_person_profile\":") == 3);
+        CHECK(count_occurrences(out.data,
+                                "\"$process_person_profile\":false") == 3);
+        CHECK_NOT_CONTAINS(out.data, "shadow-distinct");
+        CHECK_NOT_CONTAINS(out.data, "shadow-lib");
+        CHECK_NOT_CONTAINS(out.data, "shadow-version");
+        CHECK_NOT_CONTAINS(out.data, "shadow-backend");
+        CHECK_NOT_CONTAINS(out.data, "\"$process_person_profile\":true");
+        ph_strbuf_free(&out);
+    }
+
+    /* --- identify keeps same-named person properties inside $set --- */
+    {
+        setup_ctx(&c);
+        ph_props_init(&p);
+        set_sdk_owned_attempts(&p);
+        build_event(&e, PH_EV_IDENTIFY, 0, "$identify", "identified-user", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, &e, 1, &out);
+        CHECK_CONTAINS(out.data, "\"distinct_id\":\"identified-user\"");
+        CHECK_CONTAINS(out.data,
+                       "\"$set\":{\"distinct_id\":\"shadow-distinct\"");
+        CHECK_CONTAINS(out.data, "\"$lib\":\"shadow-lib\"");
+        CHECK_CONTAINS(out.data, "\"$lib_version\":\"shadow-version\"");
+        CHECK_CONTAINS(out.data, "\"$lib_backend\":\"shadow-backend\"");
+        CHECK_CONTAINS(out.data, "\"$process_person_profile\":true");
+        CHECK(count_occurrences(out.data, "\"distinct_id\":") == 2);
+        CHECK(count_occurrences(out.data, "\"$lib\":") == 2);
+        CHECK(count_occurrences(out.data, "\"$lib_version\":") == 2);
+        CHECK(count_occurrences(out.data, "\"$lib_backend\":") == 2);
+        CHECK(count_occurrences(out.data, "\"$process_person_profile\":") == 1);
+        ph_strbuf_free(&out);
+    }
 
     /* --- GeoIP opt-out is final on every native event kind --- */
     {
