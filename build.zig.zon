@@ -9,6 +9,7 @@
         "build.zig.zon",
         "include",
         "src",
+        "wasm",
         "third_party",
         "tests",
         "examples",

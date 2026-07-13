@@ -4,7 +4,8 @@
  * with the right event/props - including that the shared serializer produced
  * parity values (1.5 stays 1.5, bools stay booleans).
  *
- * Run via `zig build test-wasm` (which emcc-compiles ./test_wasm.mjs first).
+ * Run via `zig build test-wasm`, which passes the normal or Closure-built
+ * module path as argv[2].
  */
 const calls = [];
 let currentDistinctId = "install-abc";
@@ -25,8 +26,6 @@ globalThis.window = {
     },
 };
 
-import createPH from "./test_wasm.mjs";
-
 let checks = 0;
 let failures = 0;
 function check(cond, msg) {
@@ -37,6 +36,8 @@ function check(cond, msg) {
     }
 }
 
+const modulePath = process.argv[2] || "./test_wasm.mjs";
+const { default: createPH } = await import(modulePath);
 const Module = await createPH();
 const cFailures = Module._wasm_run_test();
 check(cFailures === 0, "C-side lifecycle and return-code checks passed");

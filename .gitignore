@@ -31,6 +31,8 @@ ph_offline_test/
 # WASM test build outputs (emitted next to the harness by `zig build test-wasm`)
 tests/wasm/test_wasm.mjs
 tests/wasm/test_wasm.wasm
+tests/wasm/test_wasm_closure.mjs
+tests/wasm/test_wasm_closure.wasm
 
 # Live-contract credentials - never commit real keys (.env.example is the template)
 .env

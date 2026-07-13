@@ -86,18 +86,18 @@ fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget,
     }
 }
 
-// Shared TUs compiled into the WASM module alongside the shim (ph_wasm.c).
-// The native transport/queue/thread files are deliberately excluded; posthog-js
-// owns delivery on the web.
-const wasm_shared = [_][]const u8{
-    "src/ph_wasm.c",
-    "src/ph_props.c",
-    "src/ph_json.c",
-    "src/ph_str.c",
-    "src/ph_util.c",
-    "src/ph_serialize.c",
-    "src/ph_time.c",
-};
+// Public Emscripten source/flag recipe. Build tests invoke emcc through this
+// exact response file, so the downstream consumption surface cannot drift from
+// the in-repo harness.
+const wasm_recipe = "wasm/posthog-wasm.rsp";
+
+fn addWasmCompile(b: *std.Build, emcc_path: []const u8) *std.Build.Step.Run {
+    const compile = b.addSystemCommand(&.{emcc_path});
+    // Paths inside the response file are relative to the package root.
+    compile.setCwd(b.path("."));
+    compile.addPrefixedFileArg("@", b.path(wasm_recipe));
+    return compile;
+}
 
 /// Locate emcc: tries $EMSDK/upstream/emscripten, ~/emsdk/upstream/emscripten,
 /// then PATH. Returns null if not found (WASM steps then skip).
@@ -283,27 +283,66 @@ pub fn build(b: *std.Build) void {
         .dependOn(&run_live.step);
 
     // -- WASM backend: `zig build test-wasm` -----------------------------
-    // Compiles the shim + shared core with emcc, then runs the Node parity
-    // harness (a mocked window.posthog). This explicit step fails when emcc or
-    // Node is absent; ordinary `zig build` remains independent of emsdk.
-    const test_wasm_step = b.step("test-wasm", "Build the WASM backend with emcc and run the Node parity harness");
+    // Compiles the public WASM recipe in strict C11, then runs the full Node
+    // behavioral harness against both an ordinary and Closure-optimized build.
+    // A separate public-header-only consumer fixture proves the recipe works
+    // outside the internal harness. Ordinary `zig build` remains emsdk-free.
+    const test_wasm_step = b.step("test-wasm", "Build and behavior-test normal/Closure WASM consumers");
     if (findEmcc(b)) |emcc_path| {
-        const compile = b.addSystemCommand(&.{emcc_path});
-        compile.addArg(b.pathFromRoot("tests/wasm/test_wasm_main.c"));
-        for (wasm_shared) |src| compile.addArg(b.pathFromRoot(src));
-        compile.addArgs(&.{
-            "-I",                    b.pathFromRoot("include"),
-            "-I",                    b.pathFromRoot("src"),
-            "-O1",                   "-sMODULARIZE=1",
-            "-sEXPORT_NAME=createPH", "-sENVIRONMENT=node",
-            "-sEXIT_RUNTIME=0",      "-sEXPORTED_FUNCTIONS=_main,_wasm_run_test",
+        const normal_compile = addWasmCompile(b, emcc_path);
+        normal_compile.addFileArg(b.path("tests/wasm/test_wasm_main.c"));
+        normal_compile.addArgs(&.{
+            "-O1",
+            "-Wall",
+            "-Wextra",
+            "-sMODULARIZE=1",
+            "-sEXPORT_NAME=createPH",
+            "-sENVIRONMENT=node",
+            "-sEXIT_RUNTIME=0",
+            "-sEXPORTED_FUNCTIONS=_main,_wasm_run_test",
             "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToUTF8",
-            "-o",                    b.pathFromRoot("tests/wasm/test_wasm.mjs"),
+            "-o",
+            b.pathFromRoot("tests/wasm/test_wasm.mjs"),
         });
+
+        const closure_compile = addWasmCompile(b, emcc_path);
+        closure_compile.addFileArg(b.path("tests/wasm/test_wasm_main.c"));
+        closure_compile.addArgs(&.{
+            "-O3",
+            "-Wall",
+            "-Wextra",
+            "--closure",
+            "1",
+            "-sMODULARIZE=1",
+            "-sEXPORT_NAME=createPH",
+            "-sENVIRONMENT=node",
+            "-sEXIT_RUNTIME=0",
+            "-sEXPORTED_FUNCTIONS=_main,_wasm_run_test",
+            "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToUTF8",
+            "-o",
+            b.pathFromRoot("tests/wasm/test_wasm_closure.mjs"),
+        });
+
         if (findNode(b)) |node_path| {
-            const run = b.addSystemCommand(&.{ node_path, b.pathFromRoot("tests/wasm/harness.mjs") });
-            run.step.dependOn(&compile.step);
-            test_wasm_step.dependOn(&run.step);
+            const normal_run = b.addSystemCommand(&.{node_path});
+            normal_run.addFileArg(b.path("tests/wasm/harness.mjs"));
+            normal_run.addArg("./test_wasm.mjs");
+            normal_run.step.dependOn(&normal_compile.step);
+            test_wasm_step.dependOn(&normal_run.step);
+
+            const closure_run = b.addSystemCommand(&.{node_path});
+            closure_run.addFileArg(b.path("tests/wasm/harness.mjs"));
+            closure_run.addArg("./test_wasm_closure.mjs");
+            closure_run.step.dependOn(&closure_compile.step);
+            test_wasm_step.dependOn(&closure_run.step);
+
+            const consumer_run = b.addSystemCommand(&.{
+                b.graph.zig_exe, "build", "run",
+            });
+            consumer_run.setCwd(b.path("tests/wasm/consumer"));
+            consumer_run.addArg(b.fmt("-Demcc={s}", .{emcc_path}));
+            consumer_run.addArg(b.fmt("-Dnode={s}", .{node_path}));
+            test_wasm_step.dependOn(&consumer_run.step);
         } else {
             const fail = b.addFail("test-wasm requires Node (install Node or emsdk's bundled runtime)");
             test_wasm_step.dependOn(&fail.step);

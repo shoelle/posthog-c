@@ -84,7 +84,7 @@ Requires [Zig](https://ziglang.org) 0.16.0.
 ```sh
 zig build              # static lib (zig-out/lib) + headers + examples
 zig build test         # build and run the native test suite
-zig build test-wasm    # build the WASM backend (emcc) + run the Node parity harness
+zig build test-wasm    # strict-C11 normal + Closure WASM behavioral/consumer tests
 zig build fuzz         # fuzz the two network-facing parsers (JSON + HTTP)
 zig build run-example  # run the C quickstart
 ```
@@ -103,6 +103,20 @@ every push; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the
 WASM parity harness run on Linux.
 
 WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
+
+For source consumption with Emscripten, [`wasm/posthog-wasm.rsp`](wasm/posthog-wasm.rsp)
+is the canonical source-and-compile-flag recipe. Invoke it from the posthog-c
+checkout root, then add your application's sources and link/runtime choices:
+
+```sh
+emcc @wasm/posthog-wasm.rsp /absolute/path/to/app.c -O2 -o app.js
+```
+
+The recipe keeps the backend on strict C11 and is also what `zig build
+test-wasm` consumes. [`tests/wasm/consumer/main.c`](tests/wasm/consumer/main.c)
+is the minimal public-header-only consumer fixture. For a C++ application,
+compile the SDK recipe as C in a separate step, then link those objects into the
+C++ module; the recipe's intentional `-std=c11` flag is not a C++ driver flag.
 
 ### Using it
 

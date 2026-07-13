@@ -33,6 +33,130 @@
  * in the native-only internal header. */
 void ph_serialize_props_object(const ph_props *p, ph_strbuf *out);
 
+/* Typed host bridge. EM_JS works under strict -std=c11 (unlike EM_ASM), and
+ * every host-owned name uses quoted property access so Closure cannot rename
+ * the ABI between the generated module and the page's posthog-js instance. */
+EM_JS(int, ph__wasm_js_identity_matches, (const char *expected_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    var expected = UTF8ToString(expected_ptr);
+    if (!posthog || !expected) return 0;
+    return win["__posthog_c_distinct_id"] === expected ? 1 : 0;
+});
+
+EM_JS(void, ph__wasm_js_capture,
+      (const char *event_ptr, const char *props_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (posthog)
+        posthog["capture"](UTF8ToString(event_ptr),
+                           globalThis["JSON"]["parse"](UTF8ToString(props_ptr)));
+});
+
+EM_JS(void, ph__wasm_js_identify,
+      (const char *id_ptr, const char *props_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (posthog)
+        posthog["identify"](UTF8ToString(id_ptr),
+                            globalThis["JSON"]["parse"](UTF8ToString(props_ptr)));
+});
+
+EM_JS(void, ph__wasm_js_alias,
+      (const char *new_id_ptr, const char *old_id_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (posthog)
+        posthog["alias"](UTF8ToString(new_id_ptr), UTF8ToString(old_id_ptr));
+});
+
+EM_JS(int, ph__wasm_js_get_distinct_id, (char *out, int cap), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    var getter = posthog && posthog["get_distinct_id"];
+    if (!getter) return -1;
+    var id = globalThis["String"](posthog["get_distinct_id"]());
+    var Encoder = globalThis["TextEncoder"];
+    var len = new Encoder()["encode"](id)["length"];
+    stringToUTF8(id, out, cap);
+    return len;
+});
+
+EM_JS(void, ph__wasm_js_reset, (void), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (!posthog) return;
+    posthog["reset"]();
+    if (posthog["get_distinct_id"])
+        win["__posthog_c_distinct_id"] =
+            globalThis["String"](posthog["get_distinct_id"]());
+});
+
+EM_JS(void, ph__wasm_js_group,
+      (const char *type_ptr, const char *key_ptr, const char *props_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (posthog)
+        posthog["group"](UTF8ToString(type_ptr), UTF8ToString(key_ptr),
+                         globalThis["JSON"]["parse"](UTF8ToString(props_ptr)));
+});
+
+EM_JS(void, ph__wasm_js_capture_exception,
+      (const char *props_ptr, const char *list_ptr), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (!posthog) return;
+    var props = globalThis["JSON"]["parse"](UTF8ToString(props_ptr));
+    props["$exception_list"] =
+        globalThis["JSON"]["parse"](UTF8ToString(list_ptr));
+    posthog["capture"]("$exception", props);
+});
+
+EM_JS(int, ph__wasm_js_is_feature_enabled,
+      (const char *key_ptr, int fallback), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (!posthog) return fallback;
+    var key = UTF8ToString(key_ptr);
+    var value = posthog["getFeatureFlag"]
+        ? posthog["getFeatureFlag"](key)
+        : posthog["isFeatureEnabled"](key);
+    if (value === undefined || value === null) return fallback;
+    return value === false ? 0 : (value ? 1 : 0);
+});
+
+EM_JS(int, ph__wasm_js_get_feature_flag,
+      (const char *key_ptr, char *out, int cap), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (!posthog) return 0;
+    var value = posthog["getFeatureFlag"](UTF8ToString(key_ptr));
+    if (value === undefined || value === null) return 0;
+    var text = value === true ? "true"
+        : (value === false ? "false" : globalThis["String"](value));
+    if (out && cap > 0) stringToUTF8(text, out, cap);
+    return 1;
+});
+
+EM_JS(int, ph__wasm_js_get_feature_flag_payload,
+      (const char *key_ptr, char *out, int cap), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (!posthog) return 0;
+    var value = posthog["getFeatureFlagPayload"](UTF8ToString(key_ptr));
+    if (value === undefined || value === null) return 0;
+    var text = globalThis["JSON"]["stringify"](value);
+    if (out && cap > 0) stringToUTF8(text, out, cap);
+    return 1;
+});
+
+EM_JS(void, ph__wasm_js_reload_feature_flags, (void), {
+    var win = globalThis["window"];
+    var posthog = win && win["posthog"];
+    if (posthog && posthog["reloadFeatureFlags"])
+        posthog["reloadFeatureFlags"]();
+});
+
 static int g_initialized = 0;
 static int g_enabled = 0;
 static int g_identity_ok = 0;
@@ -149,11 +273,7 @@ ph_result ph_init(const ph_config *cfg) {
     if (cfg->enabled) {
         /* Verify the host before committing any C-side state. A mismatch is a
          * failed initialization, so the caller can fix the bootstrap and retry. */
-        identity_ok = EM_ASM_INT({
-            var expected = UTF8ToString($0);
-            if (typeof window === 'undefined' || !window.posthog || !expected) return 0;
-            return window.__posthog_c_distinct_id === expected ? 1 : 0;
-        }, cfg->distinct_id);
+        identity_ok = ph__wasm_js_identity_matches(cfg->distinct_id);
         if (!identity_ok) return PH_ERR;
     }
 
@@ -187,10 +307,7 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     if (!scrub_props(event_capped, props, 1, &clean)) return PH_OK; /* before_send dropped it */
     json = props_to_json(&clean);
     if (!json) return PH_ERR;
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog)
-            window.posthog.capture(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, event_capped, json);
+    ph__wasm_js_capture(event_capped, json);
     free(json);
     return truncated ? PH_ERR_TRUNCATED : PH_OK;
 }
@@ -204,10 +321,7 @@ void ph_identify(const char *distinct_id, const ph_props *set_props) {
     if (!scrub_props("$identify", set_props, 0, &clean)) return;
     json = props_to_json(&clean);
     if (!json) return;
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog)
-            window.posthog.identify(UTF8ToString($0), JSON.parse(UTF8ToString($1)));
-    }, id_capped, json);
+    ph__wasm_js_identify(id_capped, json);
     free(json);
 }
 
@@ -225,10 +339,7 @@ void ph_alias(const char *new_id, const char *old_id) {
     clean_alias = ph_props_find_last_str(&clean, "alias");
     if (!clean_alias || !clean_alias[0]) return;
     ph_copy_capped(new_capped, sizeof(new_capped), clean_alias);
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog)
-            window.posthog.alias(UTF8ToString($0), UTF8ToString($1));
-    }, new_capped, old_capped);
+    ph__wasm_js_alias(new_capped, old_capped);
 }
 
 ph_result ph_get_distinct_id(char *out, int cap) {
@@ -236,14 +347,7 @@ ph_result ph_get_distinct_id(char *out, int cap) {
     if (!out || cap <= 0) return PH_ERR_BADARG;
     out[0] = '\0';
     if (!g_enabled || !g_identity_ok) return PH_ERR_DISABLED;
-    len = EM_ASM_INT({
-        if (typeof window === 'undefined' || !window.posthog ||
-            !window.posthog.get_distinct_id) return -1;
-        var id = String(window.posthog.get_distinct_id());
-        var len = new TextEncoder().encode(id).length;
-        stringToUTF8(id, $0, $1);
-        return len;
-    }, out, cap);
+    len = ph__wasm_js_get_distinct_id(out, cap);
     if (len < 0) return PH_ERR;
     return len >= cap ? PH_ERR_TRUNCATED : PH_OK;
 }
@@ -251,13 +355,7 @@ ph_result ph_get_distinct_id(char *out, int cap) {
 void ph_reset(void) {
     if (!g_enabled) return;
     ph_props_init(&g_super);
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog) {
-            window.posthog.reset();
-            if (window.posthog.get_distinct_id)
-                window.__posthog_c_distinct_id = String(window.posthog.get_distinct_id());
-        }
-    });
+    ph__wasm_js_reset();
 }
 
 void ph_group(const char *type, const char *key, const ph_props *set_props) {
@@ -271,11 +369,7 @@ void ph_group(const char *type, const char *key, const ph_props *set_props) {
     if (!scrub_props("$groupidentify", set_props, 0, &clean)) return;
     json = props_to_json(&clean);
     if (!json) return;
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog)
-            window.posthog.group(UTF8ToString($0), UTF8ToString($1),
-                                 JSON.parse(UTF8ToString($2)));
-    }, type_capped, key_capped, json);
+    ph__wasm_js_group(type_capped, key_capped, json);
     free(json);
 }
 
@@ -359,41 +453,21 @@ void ph_capture_exception(const ph_exception *ex) {
         return;
     }
 
-    EM_ASM({
-        if (typeof window === 'undefined' || !window.posthog) return;
-        var props = JSON.parse(UTF8ToString($0));
-        props["$exception_list"] = JSON.parse(UTF8ToString($1));
-        window.posthog.capture("$exception", props);
-    }, json, list.data);
+    ph__wasm_js_capture_exception(json, list.data);
     ph_strbuf_free(&list);
     free(json);
 }
 
 int ph_is_feature_enabled(const char *key, int fallback) {
     if (!g_enabled || !g_identity_ok || !key) return fallback;
-    return EM_ASM_INT({
-        if (typeof window === 'undefined' || !window.posthog) return $1;
-        var key = UTF8ToString($0);
-        var v = window.posthog.getFeatureFlag
-            ? window.posthog.getFeatureFlag(key)
-            : window.posthog.isFeatureEnabled(key);
-        if (v === undefined || v === null) return $1;
-        return v === false ? 0 : (v ? 1 : 0);
-    }, key, fallback);
+    return ph__wasm_js_is_feature_enabled(key, fallback);
 }
 
 ph_result ph_get_feature_flag(const char *key, char *out, int cap) {
     int found;
     if (out && cap > 0) out[0] = '\0';
     if (!g_enabled || !g_identity_ok || !key) return PH_ERR;
-    found = EM_ASM_INT({
-        if (typeof window === 'undefined' || !window.posthog) return 0;
-        var v = window.posthog.getFeatureFlag(UTF8ToString($0));
-        if (v === undefined || v === null) return 0;
-        var s = (v === true) ? "true" : (v === false ? "false" : String(v));
-        if ($1 && $2 > 0) stringToUTF8(s, $1, $2);
-        return 1;
-    }, key, out, cap);
+    found = ph__wasm_js_get_feature_flag(key, out, cap);
     return found ? PH_OK : PH_ERR;
 }
 
@@ -401,24 +475,13 @@ ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
     int found;
     if (out && cap > 0) out[0] = '\0';
     if (!g_enabled || !g_identity_ok || !key) return PH_ERR;
-    found = EM_ASM_INT({
-        if (typeof window === 'undefined' || !window.posthog) return 0;
-        var v = window.posthog.getFeatureFlagPayload(UTF8ToString($0));
-        if (v === undefined || v === null) return 0;
-        var s = JSON.stringify(v);
-        if ($1 && $2 > 0) stringToUTF8(s, $1, $2);
-        return 1;
-    }, key, out, cap);
+    found = ph__wasm_js_get_feature_flag_payload(key, out, cap);
     return found ? PH_OK : PH_ERR;
 }
 
 void ph_reload_feature_flags(void) {
     if (!g_enabled || !g_identity_ok) return;
-    EM_ASM({
-        if (typeof window !== 'undefined' && window.posthog &&
-            window.posthog.reloadFeatureFlags)
-            window.posthog.reloadFeatureFlags();
-    });
+    ph__wasm_js_reload_feature_flags();
 }
 
 /* posthog-js owns delivery and its own drop accounting; nothing to report. */

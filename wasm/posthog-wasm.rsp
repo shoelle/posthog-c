@@ -1,0 +1,11 @@
+-std=c11
+-D_POSIX_C_SOURCE=200809L
+-Iinclude
+-Isrc
+src/ph_wasm.c
+src/ph_props.c
+src/ph_json.c
+src/ph_str.c
+src/ph_util.c
+src/ph_serialize.c
+src/ph_time.c
