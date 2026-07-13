@@ -4,6 +4,7 @@
  */
 #include "posthog.h"
 #include "ph_internal.h"
+#include "ph_util.h"
 #include "mock_transport.h"
 #include "test_util.h"
 
@@ -72,6 +73,14 @@ static int redact(const char *event, ph_props *props, void *user) {
         }
     }
     ph_props_set_bool(props, "scrubbed", 1);
+    return 1;
+}
+
+static int try_disable_geoip(const char *event, ph_props *props, void *user) {
+    (void)event;
+    (void)user;
+    ph_props_remove_key(props, "$geoip_disable");
+    ph_props_set_bool(props, "$geoip_disable", 0);
     return 1;
 }
 
@@ -149,6 +158,29 @@ void suite_scrub(void) {
         CHECK_NOT_CONTAINS(mock_batch(0), "\"token\"");
         CHECK_NOT_CONTAINS(mock_batch(0), "xyz");
         CHECK_NOT_CONTAINS(mock_batch(0), "abc");
+        ph_shutdown();
+    }
+
+    /* --- GeoIP policy survives caller, super, denylist, and hook overrides --- */
+    {
+        ph_config cfg;
+        ph_props super, event;
+        static const char *deny[] = {"$geoip_disable"};
+        base_cfg(&cfg);
+        cfg.disable_geoip = 1;
+        cfg.property_denylist = deny;
+        cfg.property_denylist_count = 1;
+        cfg.before_send = try_disable_geoip;
+        start(&cfg);
+        ph_props_init(&super);
+        ph_props_set_bool(&super, "$geoip_disable", 0);
+        ph_register(&super);
+        ph_props_init(&event);
+        ph_props_set_bool(&event, "$geoip_disable", 0);
+        ph_capture("forced_geoip_policy", &event);
+        ph_flush(2000);
+        CHECK_NOT_CONTAINS(mock_batch(0), "\"$geoip_disable\":false");
+        CHECK(count_occurrences(mock_batch(0), "\"$geoip_disable\":true") == 1);
         ph_shutdown();
     }
 

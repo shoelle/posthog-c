@@ -148,6 +148,7 @@ void ph_config_defaults(ph_config *cfg) {
     cfg->person_profiles = PH_IDENTIFIED_ONLY;
     cfg->send_feature_flag_events = 1;
     cfg->preload_flags = 1;
+    cfg->disable_geoip = 0;
     cfg->max_batch_bytes = 1024 * 1024; /* 1 MiB; 0 disables the per-POST byte cap */
     /* on_stats NULL + stats_interval_ms 0 => health snapshots off by default */
 }
@@ -177,6 +178,7 @@ ph_result ph_init(const ph_config *cfg) {
     g_ph.max_retries = cfg->max_retries >= 0 ? cfg->max_retries : 3;
     g_ph.gzip = cfg->gzip;
     g_ph.send_feature_flag_events = cfg->send_feature_flag_events;
+    g_ph.disable_geoip = cfg->disable_geoip ? 1 : 0;
     g_ph.before_send = cfg->before_send;
     g_ph.on_log = cfg->on_log;
     g_ph.user_data = cfg->user_data;

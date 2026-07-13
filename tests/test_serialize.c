@@ -39,6 +39,16 @@ static void build_event(ph_event *e, int kind, unsigned char flags,
     e->blob_len = (uint16_t)ph_pack_props(props, e->data + off, PH_EVENT_DATA_CAP - off);
 }
 
+static int count_occurrences(const char *hay, const char *needle) {
+    int n = 0;
+    size_t len = strlen(needle);
+    while (hay && (hay = strstr(hay, needle)) != NULL) {
+        n++;
+        hay += len;
+    }
+    return n;
+}
+
 void suite_serialize(void) {
     ph_ctx c;
     ph_event e;
@@ -94,7 +104,84 @@ void suite_serialize(void) {
     CHECK_CONTAINS(out.data, "\"$process_person_profile\":false");
     CHECK_CONTAINS(out.data, "\"timestamp\":\"2");
     CHECK_CONTAINS(out.data, "\"uuid\":\"");
+    CHECK_NOT_CONTAINS(out.data, "$geoip_disable");
     ph_strbuf_free(&out);
+
+    /* --- GeoIP opt-out is final on every native event kind --- */
+    {
+        ph_event evs[5];
+        const int kinds[5] = {PH_EV_CAPTURE, PH_EV_IDENTIFY, PH_EV_ALIAS,
+                              PH_EV_GROUP, PH_EV_EXCEPTION};
+        const char *names[5] = {"capture", "$identify", "$create_alias",
+                                "$groupidentify", "$exception"};
+        int i;
+        setup_ctx(&c);
+        c.disable_geoip = 1;
+        ph_props_init(&p);
+        for (i = 0; i < 5; i++)
+            build_event(&evs[i], kinds[i], 0, names[i], "geo-user", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, evs, 5, &out);
+        CHECK(count_occurrences(out.data, "\"$geoip_disable\":true") == 5);
+        ph_strbuf_free(&out);
+    }
+
+    /* --- configured GeoIP policy replaces caller attempts and ignores denylist --- */
+    {
+        setup_ctx(&c);
+        c.disable_geoip = 1;
+        strcpy(c.denylist[0], "$geoip_disable");
+        c.denylist_count = 1;
+        ph_props_init(&p);
+        ph_props_set_bool(&p, "$geoip_disable", 0);
+        build_event(&e, PH_EV_CAPTURE, 0, "geo_override", "geo-user", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, &e, 1, &out);
+        CHECK_NOT_CONTAINS(out.data, "\"$geoip_disable\":false");
+        CHECK(count_occurrences(out.data, "\"$geoip_disable\":true") == 1);
+        ph_strbuf_free(&out);
+    }
+
+    /* --- optional auto-properties honor denylist --- */
+    {
+        setup_ctx(&c);
+        strcpy(c.release, "configured-release");
+        strcpy(c.denylist[0], "$os");
+        strcpy(c.denylist[1], "arch");
+        strcpy(c.denylist[2], "release");
+        c.denylist_count = 3;
+        ph_props_init(&p);
+        build_event(&e, PH_EV_CAPTURE, 0, "denylisted_auto", "user", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, &e, 1, &out);
+        CHECK_NOT_CONTAINS(out.data, "\"$os\":");
+        CHECK_NOT_CONTAINS(out.data, "\"arch\":");
+        CHECK_NOT_CONTAINS(out.data, "\"release\":");
+        ph_strbuf_free(&out);
+    }
+
+    /* --- explicit capture properties take precedence without duplicate keys --- */
+    {
+        setup_ctx(&c);
+        strcpy(c.release, "configured-release");
+        ph_props_init(&p);
+        ph_props_set_str(&p, "$os", "CallerOS");
+        ph_props_set_str(&p, "arch", "caller-arch");
+        ph_props_set_str(&p, "release", "caller-release");
+        build_event(&e, PH_EV_CAPTURE, 0, "explicit_auto", "user", &p);
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, &e, 1, &out);
+        CHECK_CONTAINS(out.data, "\"$os\":\"CallerOS\"");
+        CHECK_CONTAINS(out.data, "\"arch\":\"caller-arch\"");
+        CHECK_CONTAINS(out.data, "\"release\":\"caller-release\"");
+        CHECK_NOT_CONTAINS(out.data, "configured-release");
+        CHECK(count_occurrences(out.data, "\"$os\":") == 1);
+        CHECK(count_occurrences(out.data, "\"arch\":") == 1);
+        CHECK(count_occurrences(out.data, "\"release\":") == 1);
+        ph_strbuf_free(&out);
+    }
+
+    setup_ctx(&c);
 
     /* --- identified capture omits the anonymous marker --- */
     ph_props_init(&p);

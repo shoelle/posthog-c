@@ -90,6 +90,13 @@ static int count_text(const char *hay, const char *needle) {
 }
 
 void suite_capture(void) {
+    /* --- privacy-sensitive additions remain opt-in --- */
+    {
+        ph_config cfg;
+        ph_config_defaults(&cfg);
+        CHECK(cfg.disable_geoip == 0);
+    }
+
     /* --- basic capture roundtrip, anonymous by default --- */
     {
         ph_props p;

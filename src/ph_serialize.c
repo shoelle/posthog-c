@@ -16,6 +16,7 @@
 #include "ph_json.h"
 #include "ph_str.h"
 #include "ph_time.h"
+#include "ph_util.h"
 
 #include <string.h>
 
@@ -110,13 +111,14 @@ static int key_is(const char *key, size_t klen, const char *lit) {
 
 /* Emit every scalar (non-group) entry as a top-level "key":value pair. */
 static void emit_scalar_entries(ph_strbuf *out, int *first, const char *blob,
-                                size_t blob_len) {
+                                size_t blob_len, int skip_geoip_disable) {
     const char *cur = blob, *end = blob + blob_len;
     unsigned char type;
     const char *key, *val;
     size_t klen, vlen;
     while (ph_blob_next(&cur, end, &type, &key, &klen, &val, &vlen)) {
         if (type == PH_PK_GROUP) continue;
+        if (skip_geoip_disable && key_is(key, klen, "$geoip_disable")) continue;
         comma(out, first);
         ph_json_str(out, key, klen);
         ph_strbuf_append_char(out, ':');
@@ -125,6 +127,20 @@ static void emit_scalar_entries(ph_strbuf *out, int *first, const char *blob,
         else
             emit_scalar_value(out, type, val, vlen);
     }
+}
+
+static int blob_has_scalar_key(const char *blob, size_t blob_len,
+                               const char *wanted) {
+    const char *cur = blob, *end = blob + blob_len;
+    unsigned char type;
+    const char *key, *val;
+    size_t klen, vlen;
+    while (ph_blob_next(&cur, end, &type, &key, &klen, &val, &vlen)) {
+        (void)val;
+        (void)vlen;
+        if (type <= PH_T_BOOL && key_is(key, klen, wanted)) return 1;
+    }
+    return 0;
 }
 
 /* Emit "$groups":{type:key,...} if the blob carries any group entries. */
@@ -197,6 +213,7 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
     char iso[40];
     char uuid[37];
     int first = 1;
+    int props_are_top_level = e->kind != PH_EV_IDENTIFY && e->kind != PH_EV_GROUP;
 
     if (e->flags & PH_EVF_HAS_DID) {
         eff_did = did;
@@ -227,13 +244,23 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
     ph_strbuf_append_cstr(out, "\"distinct_id\":");
     ph_json_str(out, eff_did, eff_did_len);
 
-    /* Auto-properties stamped on every event. */
+    /* Required SDK properties are always stamped. Optional platform/release
+     * properties honor the privacy denylist, and an explicit event property
+     * suppresses its automatic counterpart rather than relying on duplicate
+     * JSON-key ordering for precedence. */
     emit_kv_cstr(out, &first, "$lib", "posthog-c");
     emit_kv_cstr(out, &first, "$lib_version", PH_VERSION_STRING);
     emit_kv_cstr(out, &first, "$lib_backend", backend_tag());
-    emit_kv_cstr(out, &first, "$os", platform_os());
-    emit_kv_cstr(out, &first, "arch", platform_arch());
-    if (ctx->release[0]) emit_kv_cstr(out, &first, "release", ctx->release);
+    if (!ph_denylist_has(ctx->denylist, ctx->denylist_count, "$os") &&
+        (!props_are_top_level || !blob_has_scalar_key(blob, e->blob_len, "$os")))
+        emit_kv_cstr(out, &first, "$os", platform_os());
+    if (!ph_denylist_has(ctx->denylist, ctx->denylist_count, "arch") &&
+        (!props_are_top_level || !blob_has_scalar_key(blob, e->blob_len, "arch")))
+        emit_kv_cstr(out, &first, "arch", platform_arch());
+    if (ctx->release[0] &&
+        !ph_denylist_has(ctx->denylist, ctx->denylist_count, "release") &&
+        (!props_are_top_level || !blob_has_scalar_key(blob, e->blob_len, "release")))
+        emit_kv_cstr(out, &first, "release", ctx->release);
 
     if (e->flags & PH_EVF_NO_PROFILE) {
         comma(out, &first);
@@ -247,7 +274,7 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
             ph_strbuf_append_cstr(out, "\"$set\":{");
             {
                 int sf = 1;
-                emit_scalar_entries(out, &sf, blob, e->blob_len);
+                emit_scalar_entries(out, &sf, blob, e->blob_len, 0);
             }
             ph_strbuf_append_char(out, '}');
             break;
@@ -258,9 +285,18 @@ static void serialize_event(const ph_ctx *ctx, const ph_event *e,
         default:
             /* CAPTURE / EXCEPTION / ALIAS: user + super props top-level, plus
              * any group-scoping entries under $groups. */
-            emit_scalar_entries(out, &first, blob, e->blob_len);
+            emit_scalar_entries(out, &first, blob, e->blob_len,
+                                ctx->disable_geoip);
             emit_groups(out, &first, blob, e->blob_len);
             break;
+    }
+
+    /* A configured privacy opt-out is a final wire invariant: caller/super
+     * properties and before_send cannot replace or remove it, and the config
+     * denylist cannot accidentally disable it. */
+    if (ctx->disable_geoip) {
+        comma(out, &first);
+        ph_strbuf_append_cstr(out, "\"$geoip_disable\":true");
     }
 
     ph_strbuf_append_cstr(out, "}}");

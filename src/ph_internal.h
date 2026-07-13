@@ -148,6 +148,7 @@ typedef struct ph_ctx {
     int max_retries;
     int gzip;
     int send_feature_flag_events;
+    int disable_geoip;
     ph_before_send_fn before_send;
     ph_log_fn on_log;
     void *user_data;

@@ -61,6 +61,7 @@ void suite_flags(void) {
         mock_set_flags_response(FLAGS_JSON);
         ph_reload_feature_flags();
         CHECK_CONTAINS(mock_last_fetch_url(), "/flags?v=2");
+        CHECK_NOT_CONTAINS(mock_last_fetch_body(), "\"geoip_disable\"");
 
         CHECK(ph_is_feature_enabled("my-flag", 0) == 1);
         CHECK(ph_is_feature_enabled("off-flag", 1) == 0);
@@ -76,6 +77,23 @@ void suite_flags(void) {
         CHECK(strcmp(out, "{\"color\":\"red\"}") == 0);
         CHECK(ph_get_feature_flag_payload("off-flag", out, sizeof(out)) == PH_ERR);
 
+        ph_shutdown();
+    }
+
+    /* --- GeoIP opt-out is carried on every native flag evaluation request --- */
+    {
+        ph_config cfg;
+        init_sdk(&cfg);
+        cfg.disable_geoip = 1;
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        mock_set_flags_response(FLAGS_JSON);
+        ph_reload_feature_flags();
+        CHECK_CONTAINS(mock_last_fetch_body(), "\"geoip_disable\":true");
+        ph_identify("geo-account", NULL);
+        ph_reload_feature_flags();
+        CHECK_CONTAINS(mock_last_fetch_body(), "\"geoip_disable\":true");
         ph_shutdown();
     }
 

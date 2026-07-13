@@ -165,6 +165,8 @@ void ph__flags_fetch(void) {
     ph_strbuf_init(&body);
     ph_strbuf_append_cstr(&body, "{\"api_key\":");
     ph_json_cstr(&body, g_ph.api_key);
+    if (g_ph.disable_geoip)
+        ph_strbuf_append_cstr(&body, ",\"geoip_disable\":true");
     ph_mutex_lock(&g_ph.lock);
     context_gen = g_ph.flags_context_gen;
     ph_strbuf_append_cstr(&body, ",\"distinct_id\":");

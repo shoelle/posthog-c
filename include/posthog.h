@@ -210,6 +210,10 @@ typedef struct ph_config {
 
     int send_feature_flag_events; /* emit $feature_flag_called on flag reads (default 1) */
     int preload_flags;            /* fetch flags during ph_init (default 1) */
+    int disable_geoip;            /* opt out of GeoIP enrichment for events and
+                                   * feature-flag evaluation (default 0). Native
+                                   * applies this directly; wasm requires an
+                                   * equivalent host policy. */
 
     ph_before_send_fn before_send; /* scrubber; NULL = pass-through */
     ph_log_fn on_log;              /* diagnostics sink; NULL = silent */
