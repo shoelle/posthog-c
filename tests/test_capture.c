@@ -89,6 +89,39 @@ static int count_text(const char *hay, const char *needle) {
     return n;
 }
 
+/* Concatenate every delivered batch body into `out`. */
+static void join_batches(char *out, size_t cap) {
+    int i, n = mock_batch_count();
+    size_t used = 0;
+    out[0] = '\0';
+    for (i = 0; i < n; i++) {
+        const char *b = mock_batch(i);
+        size_t bl;
+        if (!b) continue;
+        bl = strlen(b);
+        if (used + bl + 1 >= cap) break;
+        memcpy(out + used, b, bl);
+        used += bl;
+    }
+    out[used] = '\0';
+}
+
+/* ph_identify()/ph_group() wake the sender for a flag refresh, so the events
+ * under test can legitimately span more than one POST, and a loaded CI runner
+ * can starve the sender past a single flush deadline. Flush until the last
+ * captured event has actually been delivered (FIFO: the last event landing means
+ * every earlier one did too), then join every batch so callers assert on the
+ * aggregate instead of assuming a single batch arrived in time. */
+static void deliver_and_join(char *out, size_t cap, const char *last_event) {
+    int i;
+    for (i = 0; i < 10; i++) {
+        ph_flush(2000);
+        join_batches(out, cap);
+        if (strstr(out, last_event)) return;
+        sleep_ms(25);
+    }
+}
+
 void suite_capture(void) {
     /* --- privacy-sensitive additions remain opt-in --- */
     {
@@ -136,21 +169,23 @@ void suite_capture(void) {
         ph_props_set_str(&sp, "plan", "pro");
         ph_identify("acct-777", &sp);
         ph_capture("after_identify", NULL);
-        ph_flush(2000);
-        CHECK(mock_batch_count() == 1);
-        CHECK_CONTAINS(mock_batch(0), "\"event\":\"$identify\"");
-        CHECK_CONTAINS(mock_batch(0), "\"$set\":{");
-        CHECK_CONTAINS(mock_batch(0), "\"plan\":\"pro\"");
-        CHECK_CONTAINS(mock_batch(0), "\"distinct_id\":\"acct-777\"");
-        CHECK_CONTAINS(mock_batch(0), "\"event\":\"after_identify\"");
-        CHECK_NOT_CONTAINS(mock_batch(0), "\"$process_person_profile\":false");
+        {
+            char joined[16384];
+            deliver_and_join(joined, sizeof(joined), "\"event\":\"after_identify\"");
+            CHECK_CONTAINS(joined, "\"event\":\"$identify\"");
+            CHECK_CONTAINS(joined, "\"$set\":{");
+            CHECK_CONTAINS(joined, "\"plan\":\"pro\"");
+            CHECK_CONTAINS(joined, "\"distinct_id\":\"acct-777\"");
+            CHECK_CONTAINS(joined, "\"event\":\"after_identify\"");
+            CHECK_NOT_CONTAINS(joined, "\"$process_person_profile\":false");
+        }
         ph_shutdown();
     }
 
     /* --- PH_NEVER also suppresses profiles on identity/control events --- */
     {
         ph_config cfg;
-        const char *body;
+        char joined[16384];
         ph_config_defaults(&cfg);
         cfg.api_key = "phc_never";
         cfg.api_host = "http://127.0.0.1:9/ingest";
@@ -167,15 +202,13 @@ void suite_capture(void) {
         ph_alias("alias-never", "acct-never");
         ph_group("company", "never-co", NULL);
         ph_capture("after_never_controls", NULL);
-        ph_flush(2000);
+        deliver_and_join(joined, sizeof(joined), "\"event\":\"after_never_controls\"");
 
-        CHECK(mock_batch_count() == 1);
-        body = mock_batch(0);
-        CHECK_CONTAINS(body, "\"event\":\"$identify\"");
-        CHECK_CONTAINS(body, "\"event\":\"$create_alias\"");
-        CHECK_CONTAINS(body, "\"event\":\"$groupidentify\"");
-        CHECK_CONTAINS(body, "\"event\":\"after_never_controls\"");
-        CHECK(count_text(body, "\"$process_person_profile\":false") == 4);
+        CHECK_CONTAINS(joined, "\"event\":\"$identify\"");
+        CHECK_CONTAINS(joined, "\"event\":\"$create_alias\"");
+        CHECK_CONTAINS(joined, "\"event\":\"$groupidentify\"");
+        CHECK_CONTAINS(joined, "\"event\":\"after_never_controls\"");
+        CHECK(count_text(joined, "\"$process_person_profile\":false") == 4);
         ph_shutdown();
     }
 
