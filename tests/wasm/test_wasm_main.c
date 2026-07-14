@@ -205,9 +205,13 @@ int wasm_run_test(void) {
     ph_capture("drop_me", NULL);
     ph_capture("host_drop_envelope", NULL);
     ph_props_init(&p);
-    ph_props_set_str(&p, "distinct_id", "other-id");
+    ph_props_set_str(&p, "distinct_id", "other-id"); /* SDK-owned: stripped, not a spoof */
+    ph_props_set_str(&p, "$lib", "shadow-lib");      /* SDK-owned: stripped */
     ph_capture("caller_redirect_identity", &p);
     ph_capture("host_redirect_identity", NULL);
+    ph_props_init(&p);
+    ph_props_set_str(&p, "release", "caller-release@9"); /* overrides config release */
+    ph_capture("caller_release_wins", &p);
 
     /* Every JSON-using facade call fails closed when serialization fails. */
     ph_props_init(&p);

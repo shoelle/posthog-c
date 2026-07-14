@@ -148,6 +148,33 @@ void suite_serialize(void) {
         ph_strbuf_free(&out);
     }
 
+    /* --- a caller/super "$groups" scalar cannot shadow the SDK's $groups
+     *     object on capture-family events (the group family was missing from
+     *     the SDK-owned guard) --- */
+    {
+        size_t off, bl;
+        setup_ctx(&c);
+        ph_props_init(&p);
+        ph_props_set_str(&p, "$groups", "shadow-groups");
+        ph_props_set_str(&p, "$group_set", "shadow-set");
+        ph_props_set_int(&p, "round", 2);
+        build_event(&e, PH_EV_CAPTURE, 0, "grouped", "user-4", &p);
+        off = (size_t)e.name_len + e.did_len;
+        bl = e.blob_len;
+        bl += ph_pack_str_entry(e.data + off + bl, PH_EVENT_DATA_CAP - off - bl,
+                                (unsigned char)PH_PK_GROUP, "game", "asteroids");
+        e.blob_len = (uint16_t)bl;
+        ph_strbuf_init(&out);
+        ph_serialize_batch(&c, &e, 1, &out);
+        /* Exactly one $groups key, and it is the SDK object, not the shadow. */
+        CHECK(count_occurrences(out.data, "\"$groups\":") == 1);
+        CHECK_CONTAINS(out.data, "\"$groups\":{\"game\":\"asteroids\"}");
+        CHECK_NOT_CONTAINS(out.data, "shadow-groups");
+        CHECK_NOT_CONTAINS(out.data, "shadow-set");
+        CHECK_CONTAINS(out.data, "\"round\":2"); /* ordinary props still ride */
+        ph_strbuf_free(&out);
+    }
+
     /* --- identify keeps same-named person properties inside $set --- */
     {
         setup_ctx(&c);

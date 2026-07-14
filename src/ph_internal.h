@@ -285,6 +285,12 @@ void ph_serialize_batch(const ph_ctx *ctx, const ph_event *events, int n,
  * so property JSON matches byte-for-byte across native and wasm. */
 void ph_serialize_props_object(const ph_props *p, struct ph_strbuf *out);
 
+/* Remove the SDK-owned top-level wire keys ($lib, distinct_id, $groups, ...)
+ * from p. The native serializer skips these while emitting; the wasm
+ * capture/exception paths call this so a caller/super property can't shadow
+ * them before posthog-js, keeping native/wasm property shaping in parity. */
+void ph__props_strip_sdk_owned_top_level(ph_props *p);
+
 /* The shared enqueue path: snapshot identity/super-props/group scoping under
  * g_ph.lock and pack a self-contained event into the ring. Defined in ph_core.c;
  * the exception (ph_exception.c) and feature-flag (ph_flags.c) emitters call it.
@@ -322,7 +328,8 @@ void ph__flags_request_auto_refresh(void);
 int ph__flags_take_fetch(uint64_t *generation, uint64_t *context_gen);
 void ph__flags_complete_fetch(uint64_t generation,
                               ph_feature_flag_reload_status status);
-ph_feature_flag_reload_status ph__flags_ingest(const char *json, size_t len);
+/* Sender is stopping: terminate every pending reload so blocking waiters exit. */
+void ph__flags_abort_pending(void);
 ph_feature_flag_reload_status ph__flags_fetch(uint64_t context_gen);
 int ph__flags_is_enabled(const char *key, int fallback);
 ph_result ph__flags_get(const char *key, char *out, int cap);

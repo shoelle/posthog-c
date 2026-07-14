@@ -109,12 +109,32 @@ static int key_is(const char *key, size_t klen, const char *lit) {
     return klen == strlen(lit) && memcmp(key, lit, klen) == 0;
 }
 
+/* Wire keys the SDK stamps itself on capture/exception/alias events. A caller
+ * or super property of the same name must not ride alongside them: emit_groups
+ * writes "$groups" from the packed group entries, and $lib/distinct_id/... are
+ * SDK-owned, so a duplicate would corrupt the envelope. One list, two uses -
+ * the native serializer skips these during emit, and the wasm capture/exception
+ * paths strip them from the property object before posthog-js sees it, so both
+ * backends shape a given ph_props the same way. */
+static const char *const k_sdk_owned_top_level[] = {
+    "distinct_id",  "$lib",       "$lib_version", "$lib_backend",
+    "$process_person_profile", "$groups", "$group_set", "$group_type",
+    "$group_key",
+};
+#define PH_SDK_OWNED_TOP_LEVEL_COUNT \
+    (sizeof(k_sdk_owned_top_level) / sizeof(k_sdk_owned_top_level[0]))
+
 static int key_is_sdk_owned_top_level(const char *key, size_t klen) {
-    return key_is(key, klen, "distinct_id") ||
-           key_is(key, klen, "$lib") ||
-           key_is(key, klen, "$lib_version") ||
-           key_is(key, klen, "$lib_backend") ||
-           key_is(key, klen, "$process_person_profile");
+    size_t i;
+    for (i = 0; i < PH_SDK_OWNED_TOP_LEVEL_COUNT; i++)
+        if (key_is(key, klen, k_sdk_owned_top_level[i])) return 1;
+    return 0;
+}
+
+void ph__props_strip_sdk_owned_top_level(ph_props *p) {
+    size_t i;
+    for (i = 0; i < PH_SDK_OWNED_TOP_LEVEL_COUNT; i++)
+        ph_props_remove_key(p, k_sdk_owned_top_level[i]);
 }
 
 /* Emit every scalar (non-group) entry as a top-level "key":value pair. */

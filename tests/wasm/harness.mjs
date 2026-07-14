@@ -190,9 +190,16 @@ check(cap && cap.props.$process_person_profile === false,
 check(!calls.some((c) => c.event === "drop_me"), "C before_send dropped drop_me");
 check(!calls.some((c) => c.event === "host_drop_envelope"),
       "host finalizer dropped an invalid ingestion envelope");
-check(!calls.some((c) => c.event === "caller_redirect_identity" ||
-                         c.event === "host_redirect_identity"),
-      "caller and final scrubbers cannot redirect the validated identity");
+check(!calls.some((c) => c.event === "host_redirect_identity"),
+      "a host final-scrubber identity rewrite is still dropped");
+const redirect = calls.find((c) => c.event === "caller_redirect_identity");
+check(redirect && redirect.props.distinct_id === "install-abc",
+      "caller distinct_id shadow is stripped (native parity); real identity wins");
+check(redirect && redirect.props.$lib !== "shadow-lib",
+      "caller $lib shadow is stripped from wasm capture props");
+const relWin = calls.find((c) => c.event === "caller_release_wins");
+check(relWin && relWin.props.release === "caller-release@9",
+      "a caller-supplied event release overrides the configured release");
 check(calls.some((c) => c.event === "distinct_id_getter_ok"),
       "current distinct id is readable through descriptor client");
 check(!calls.some((c) => ["disabled_init", "failed_badarg_init",

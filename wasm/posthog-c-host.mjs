@@ -143,10 +143,14 @@ export function initPostHogC(posthog, spec) {
         return event;
     });
 
-    /* Release is optional enrichment: a final scrubber may remove it. */
+    /* Release is optional enrichment: the config value is a default that a
+     * caller-supplied event `release` overrides (matching the native serializer,
+     * which suppresses the config release when the event carries its own). A
+     * final scrubber may still remove it. */
     if (release) {
         beforeSend.push((event) => {
-            if (event && event["properties"]) event["properties"]["release"] = release;
+            const props = event && event["properties"];
+            if (props && props["release"] === undefined) props["release"] = release;
             return event;
         });
     }

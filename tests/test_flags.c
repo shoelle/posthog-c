@@ -116,6 +116,31 @@ void suite_flags(void) {
         ph_shutdown();
     }
 
+    /* --- shutdown terminates a still-pending reload so a blocking
+     *     ph_reload_feature_flags() caller wakes instead of parking on a
+     *     condvar that ph_shutdown is about to destroy --- */
+    {
+        ph_config cfg;
+        uint64_t req = 0;
+        init_sdk(&cfg);
+        CHECK(ph_init(&cfg) == PH_OK);
+        mock_reset();
+        mock_install();
+        mock_set_flags_response(FLAGS_JSON);
+        mock_set_fetch_blocked(1);             /* pin the /flags/ fetch in-flight */
+        CHECK(ph_reload_feature_flags_async(&req) == PH_OK);
+        CHECK(mock_wait_fetch_count(1, 2000)); /* the sender is now parked in fetch */
+        CHECK(ph_get_feature_flag_reload_status(req) ==
+              PH_FEATURE_FLAG_RELOAD_PENDING);
+        /* The step ph__sender_stop_and_join() now runs once the sender exits:
+         * a pending reload must become terminal, not stay PENDING forever. */
+        ph__flags_abort_pending();
+        CHECK(ph_get_feature_flag_reload_status(req) ==
+              PH_FEATURE_FLAG_RELOAD_FAILED);
+        mock_set_fetch_blocked(0);             /* release the orphaned fetch */
+        ph_shutdown();
+    }
+
     /* --- transport, invalid JSON, partial evaluation, and callback safety --- */
     {
         ph_config cfg;

@@ -985,6 +985,10 @@ void ph__sender_stop_and_join(void) {
     ph_queue_wake(&g_ph.queue); /* break the wait so it sees stop */
     ph_thread_join(&g_ph.sender);
     g_ph.sender_running = 0;
+    /* The sender is gone; any reload it never got to service would otherwise
+     * strand a blocking ph_reload_feature_flags() caller. Fail them and wake
+     * them before ph_shutdown destroys flags_cond. */
+    ph__flags_abort_pending();
 }
 
 void ph__sender_wake(void) { ph_queue_wake(&g_ph.queue); }

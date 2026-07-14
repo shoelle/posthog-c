@@ -36,6 +36,7 @@
 /* Defined in ph_serialize.c (shared). Forward-declared so this TU doesn't pull
  * in the native-only internal header. */
 void ph_serialize_props_object(const ph_props *p, ph_strbuf *out);
+void ph__props_strip_sdk_owned_top_level(ph_props *p);
 
 /* Typed host bridge. EM_JS works under strict -std=c11, and every host-owned
  * name is quoted so Closure cannot rename the ABI. The bridge uses the client
@@ -446,6 +447,9 @@ ph_result ph_capture(const char *event, const ph_props *props) {
     truncated = strlen(event) >= sizeof(event_capped);
     ph_copy_capped(event_capped, sizeof(event_capped), event);
     if (!scrub_props(event_capped, props, 1, &clean)) return PH_OK; /* before_send dropped it */
+    /* Caller/super props cannot shadow SDK-owned wire keys; posthog-js owns
+     * $lib/distinct_id/... just as the native serializer does. */
+    ph__props_strip_sdk_owned_top_level(&clean);
     json = props_to_json(&clean);
     if (!json) return PH_ERR;
     if (!ph__wasm_js_capture(event_capped, json)) {
@@ -596,6 +600,8 @@ void ph_capture_exception(const ph_exception *ex) {
                                  &omit_filename, &omit_module, &omit_frames))
         return;
 
+    /* Same SDK-owned-key protection the native exception path applies. */
+    ph__props_strip_sdk_owned_top_level(&clean);
     json = props_to_json(&clean);
     if (!json) return;
 

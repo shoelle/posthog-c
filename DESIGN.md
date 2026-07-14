@@ -32,7 +32,7 @@ counts it as dropped; an already-running libc resolver is not cancellable.
 - **Zig build**, with the sources exposed so a CMake shim can wrap them later.
 - **TLS per platform**: each desktop links its own system TLS - WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux) - rather than vendoring a crypto library.
 - **Fixed per-event property caps** (part of the `ph_props` ABI): a pathological event drops its overflow properties (and counts them) instead of ever allocating.
-- **Privacy**: anonymous by default; a `before_send` hook + a `property_denylist` scrub every event; SDK-owned identity/profile/library fields cannot be replaced. WASM adds a final host scrub after posthog-js enrichment. A master `enabled` kill-switch makes the C SDK a no-op.
+- **Privacy**: anonymous by default; a `before_send` hook + a `property_denylist` scrub every event; SDK-owned identity/profile/library/group fields cannot be replaced by caller or super props - one shared key list (`k_sdk_owned_top_level`) drives both the native serializer's emit-skip and the WASM capture/exception strip, so both backends shape a given `ph_props` identically. WASM adds a final host scrub after posthog-js enrichment. A master `enabled` kill-switch makes the C SDK a no-op.
 - **Backpressure**: the sender honors HTTP 429/503 `Retry-After` and PostHog's `200`-body quota notice, and a client-side token bucket caps what we emit in the first place.
 - **Background thread over call-and-pump (native)**: an inline pump would risk blowing a frame, and the crash handler needs process-global state anyway; `ph_flush()` already covers the frame-seam case. WASM deliberately calls posthog-js synchronously.
 - **Out of scope**: session replay (nothing to record from C, and a privacy liability).

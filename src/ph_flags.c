@@ -155,6 +155,24 @@ void ph__flags_complete_fetch(uint64_t generation,
     ph_mutex_unlock(&g_ph.lock);
 }
 
+/* Shutdown is stopping the sender, so every queued/in-flight reload has become
+ * unservable. Fail them and wake any ph_reload_feature_flags() waiter now,
+ * rather than leaving it parked on flags_cond until ph_shutdown destroys the
+ * condvar underneath it. Caller must have already joined the sender thread. */
+void ph__flags_abort_pending(void) {
+    int i;
+    ph_mutex_lock(&g_ph.lock);
+    for (i = 0; i < PH_FLAG_RELOAD_HISTORY_CAP; i++) {
+        ph_flag_reload_record *it = &g_ph.flag_reload_history[i];
+        if (it->request_id && it->status == PH_FEATURE_FLAG_RELOAD_PENDING)
+            it->status = PH_FEATURE_FLAG_RELOAD_FAILED;
+    }
+    g_ph.flags_refetch = 0;
+    g_ph.flags_fetch_inflight = 0;
+    ph_cond_broadcast(&g_ph.flags_cond);
+    ph_mutex_unlock(&g_ph.lock);
+}
+
 /* Caller holds g_ph.lock. */
 static ph_flag *find_locked(const char *key) {
     int i;
@@ -285,14 +303,6 @@ static ph_feature_flag_reload_status flags_ingest_for_context(
                    : PH_FEATURE_FLAG_RELOAD_SUCCESS;
 }
 
-ph_feature_flag_reload_status ph__flags_ingest(const char *json, size_t len) {
-    uint64_t context_gen;
-    ph_mutex_lock(&g_ph.lock);
-    context_gen = g_ph.flags_context_gen;
-    ph_mutex_unlock(&g_ph.lock);
-    return flags_ingest_for_context(json, len, context_gen);
-}
-
 static void flags_url(char *out, size_t cap) {
     size_t n = strlen(g_ph.api_host);
     while (n > 0 && g_ph.api_host[n - 1] == '/') n--;
@@ -308,7 +318,7 @@ ph_feature_flag_reload_status ph__flags_fetch(uint64_t expected_context_gen) {
     int status, i;
 
     /* Build {"api_key","distinct_id","groups":{...}}. Snapshot identity under
-     * the lock; ph__flags_ingest re-locks later, so release it before fetching. */
+     * the lock; flags_ingest_for_context re-locks later, so release it first. */
     ph_strbuf_init(&body);
     ph_strbuf_append_cstr(&body, "{\"api_key\":");
     ph_json_cstr(&body, g_ph.api_key);
@@ -537,6 +547,14 @@ void ph_reload_feature_flags(void) {
             ph_flag_reload_record *record = reload_record_locked(request_id);
             status = record ? record->status : PH_FEATURE_FLAG_RELOAD_UNKNOWN;
             if (status != PH_FEATURE_FLAG_RELOAD_PENDING) break;
+            /* Bail if the sender is gone (e.g. a concurrent ph_shutdown): the
+             * queued job can no longer be serviced, so parking here would hang
+             * until ph_shutdown tears down flags_cond. Mirrors the sender-running
+             * guard the pre-queue implementation had. */
+            if (!g_ph.sender_running) {
+                status = PH_FEATURE_FLAG_RELOAD_FAILED;
+                break;
+            }
             ph_cond_timedwait(&g_ph.flags_cond, &g_ph.lock, 100);
         }
         ph_mutex_unlock(&g_ph.lock);
