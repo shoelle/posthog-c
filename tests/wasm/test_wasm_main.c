@@ -42,6 +42,22 @@ EM_JS(void, wasm_replace_public_descriptor, (void), {
     if (win) win["__posthog_c_v1"] = bad;
 });
 
+EM_JS(void, wasm_install_descriptor_without_flags_host, (void), {
+    var win = globalThis["window"];
+    var saved = globalThis["__posthog_c_v1"] ||
+                (win && win["__posthog_c_v1"]);
+    Module["__posthog_c_saved_public_v1"] = saved;
+    var bad = {};
+    var keys = globalThis["Object"]["keys"](saved);
+    for (var i = 0; i < keys["length"]; i++) {
+        var key = keys[i];
+        if (key !== "flags_api_host") bad[key] = saved[key];
+    }
+    globalThis["Object"]["freeze"](bad);
+    globalThis["__posthog_c_v1"] = bad;
+    if (win) win["__posthog_c_v1"] = bad;
+});
+
 EM_JS(void, wasm_mutate_bound_finalizer, (void), {
     var d = Module["__posthog_c_bound_v1"];
     Module["__posthog_c_saved_finalizer_v1"] = d["client"]["config"]["before_send"];
@@ -53,6 +69,21 @@ EM_JS(void, wasm_restore_bound_finalizer, (void), {
     d["client"]["config"]["before_send"] =
         Module["__posthog_c_saved_finalizer_v1"];
     delete Module["__posthog_c_saved_finalizer_v1"];
+});
+
+EM_JS(void, wasm_mutate_bound_flags_host, (void), {
+    var d = Module["__posthog_c_bound_v1"];
+    Module["__posthog_c_saved_flags_host_v1"] =
+        d["client"]["config"]["flags_api_host"];
+    d["client"]["config"]["flags_api_host"] =
+        "https://wrong-flags-proxy.example";
+});
+
+EM_JS(void, wasm_restore_bound_flags_host, (void), {
+    var d = Module["__posthog_c_bound_v1"];
+    d["client"]["config"]["flags_api_host"] =
+        Module["__posthog_c_saved_flags_host_v1"];
+    delete Module["__posthog_c_saved_flags_host_v1"];
 });
 
 static int log_count;
@@ -139,6 +170,10 @@ int wasm_run_test(void) {
     wasm_restore_public_descriptor();
     if (ph_capture("failed_throwing_host_init", NULL) != PH_ERR_DISABLED)
         failures++;
+
+    wasm_install_descriptor_without_flags_host();
+    if (ph_init(&cfg) != PH_ERR) failures++;
+    wasm_restore_public_descriptor();
 
     cfg.api_key = "phc_other";
     if (ph_init(&cfg) != PH_ERR) failures++;
@@ -293,6 +328,11 @@ int wasm_run_test(void) {
     if (ph_capture("mutated_host_contract", NULL) != PH_ERR) failures++;
     wasm_restore_bound_finalizer();
     if (ph_capture("restored_host_contract", NULL) != PH_OK) failures++;
+
+    wasm_mutate_bound_flags_host();
+    if (ph_capture("mutated_flags_host", NULL) != PH_ERR) failures++;
+    wasm_restore_bound_flags_host();
+    if (ph_capture("restored_flags_host", NULL) != PH_OK) failures++;
 
     if (log_count < 5) failures++; /* serialization + host integrity failures diagnosed */
 

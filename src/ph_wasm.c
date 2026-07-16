@@ -82,7 +82,9 @@ EM_JS(int, ph__wasm_js_validate_host,
             d["final_scrubber"] !== "posthog-js-before-send-v1") return 0;
         if (disable_geoip) {
             if (d["geoip_events"] !== "force-disable-v1" ||
-                d["geoip_flags"] !== "proxy-inject-v1") return 0;
+                d["geoip_flags"] !== "proxy-inject-v1" ||
+                typeof d["flags_api_host"] !== "string" ||
+                !d["flags_api_host"]) return 0;
         } else if (d["geoip_events"] !== "default" ||
                    d["geoip_flags"] !== "default") return 0;
         if (Module["__posthog_c_bound_v1"] !== undefined) return 0;

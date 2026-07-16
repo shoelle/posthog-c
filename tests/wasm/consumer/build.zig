@@ -15,13 +15,19 @@ pub fn build(b: *std.Build) void {
     compile.addPrefixedFileArg("@", ph.path("wasm/posthog-wasm.rsp"));
     compile.addFileArg(b.path("main.c"));
     compile.addArgs(&.{
-        "-Wall",            "-Wextra",         "-O1", "-sENVIRONMENT=node",
-        "-sEXIT_RUNTIME=1", "-sSINGLE_FILE=1", "-o",
+        "-Wall",            "-Wextra",         "-O1",
+        "-sENVIRONMENT=node",
+        "-sEXIT_RUNTIME=1", "-sSINGLE_FILE=1",
+        "-sMODULARIZE=1",
+        "-sEXPORT_NAME=createPostHogConsumer",
+        "-o",
     });
-    const output = compile.addOutputFileArg("posthog_wasm_consumer.js");
+    const output = compile.addOutputFileArg("posthog_wasm_consumer.cjs");
 
     const run = b.addSystemCommand(&.{node});
+    run.addFileArg(b.path("run.cjs"));
     run.addFileArg(output);
-    b.step("run", "Compile and run the standalone WASM source consumer")
+    run.addFileArg(ph.path("wasm/posthog-c-host.js"));
+    b.step("run", "Compile and load the standalone CommonJS WASM consumer")
         .dependOn(&run.step);
 }

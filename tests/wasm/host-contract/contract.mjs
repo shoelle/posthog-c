@@ -28,6 +28,7 @@ const client = initPostHogC(posthog, {
     "release": "contract@1.0.0",
     "disable_geoip": true,
     "geoip_flags": "proxy-inject-v1",
+    "flags_api_host": "https://flags-proxy.example/GeoIP///",
     "final_property_denylist": ["$process_person_profile"],
     "final_before_send": (event) => {
         const props = event && event["properties"];
@@ -61,6 +62,7 @@ const requestsAfterInit = unexpectedRequests.length;
 
 assert.equal(client["get_distinct_id"](), "contract-install-id");
 assert.equal(client["config"]["api_host"], "https://proxy.example/CaseSensitive/Ingest");
+assert.equal(client["config"]["flags_api_host"], "https://flags-proxy.example/GeoIP");
 assert.equal(client["config"]["person_profiles"], "never");
 assert.equal(client["config"]["advanced_disable_feature_flags_on_first_load"], true);
 assert.equal(client["config"]["bootstrap"]["isIdentifiedID"], false);
@@ -100,6 +102,8 @@ assert.equal(kept["properties"]["$process_person_profile"], false,
     "PH_NEVER is restored after the final scrubber and denylist");
 
 const descriptor = globalThis["__posthog_c_v1"];
+assert.equal(descriptor["flags_api_host"], "https://flags-proxy.example/GeoIP",
+    "the descriptor attests the independently configured flags proxy");
 const savedWarn = console.warn;
 let reinitRejected = false;
 try {
@@ -114,6 +118,7 @@ try {
         "send_feature_flag_events": false,
         "disable_geoip": true,
         "geoip_flags": "proxy-inject-v1",
+        "flags_api_host": "https://flags-proxy.example/GeoIP",
     });
 } catch (_) {
     reinitRejected = true;
@@ -124,6 +129,12 @@ assert.equal(reinitRejected, true, "an already-loaded client cannot be relabeled
 assert.equal(globalThis["__posthog_c_v1"], descriptor,
     "a rejected posthog-js reinitialization leaves the validated descriptor intact");
 assert.equal(descriptor["checked_client"](), client);
+client["set_config"]({ "flags_api_host": "https://wrong-flags-proxy.example" });
+assert.equal(descriptor["checked_client"](), null,
+    "mutating the flags proxy invalidates future bridge calls");
+client["set_config"]({ "flags_api_host": "https://flags-proxy.example/GeoIP" });
+assert.equal(descriptor["checked_client"](), client,
+    "restoring the attested flags proxy restores the live contract");
 client["set_config"]({ "before_send": [] });
 assert.equal(descriptor["checked_client"](), null,
     "mutating the final privacy pipeline invalidates future bridge calls");

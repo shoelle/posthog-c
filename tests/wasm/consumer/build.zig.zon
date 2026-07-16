@@ -6,5 +6,5 @@
     .dependencies = .{
         .posthog_c = .{ .path = "../../.." },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "main.c" },
+    .paths = .{ "build.zig", "build.zig.zon", "main.c", "package.json", "run.cjs" },
 }

@@ -78,13 +78,53 @@ initPostHogC(posthog, {
 })
 ```
 
+The helper has matching entry points for the common host module shapes:
+
+- `wasm/posthog-c-host.mjs` exports `initPostHogC` and
+  `initPostHogCAsync` for ESM.
+- `wasm/posthog-c-host.js` is both a CommonJS module and a plain script. It
+  exports the same functions from `require()` and publishes the frozen
+  `globalThis.PostHogC` object.
+
+Use `initPostHogC()` when the posthog-js library is loaded and the selected
+default or named client is still fresh. Use `initPostHogCAsync()` with a
+promise, an async loader, or an ESM
+module namespace:
+
+```js
+await initPostHogCAsync(() => import("posthog-js"), {
+  // ...the same host fields as above...
+})
+```
+
+The async form also accepts the official queueing snippet's `window.posthog`.
+That stub's `init()` does not return a client, so the helper waits for
+`posthog_config.loaded`, invokes any user-supplied `loaded` callback with its
+normal client argument and config binding, then validates and publishes the
+resulting live contract. It does not poll, impose a timeout, or choose how the
+posthog-js script is fetched. Do not call `ph_init()` or start an Emscripten
+factory whose `main()` calls it until the returned promise resolves.
+
+For a vendored or CDN-loaded classic-script setup, install the queueing
+snippet's loader stub, but replace its final `posthog.init(...)` call with the
+helper so posthog-c remains the sole initialization owner:
+
+```html
+<script src="/vendor/posthog-c-host.js"></script>
+<script>
+  const hostReady = PostHogC.initPostHogCAsync(window.posthog, hostSpec)
+  hostReady.then(function () { return createApp() })
+</script>
+```
+
 The C config must carry the same API key, normalized host, distinct ID, profile,
 flag, release, and GeoIP policy. `ph_init()` validates all of them before it
 commits callbacks or enabled state. A disabled C initialization performs no
 descriptor reads and makes no calls to the already-loaded posthog-js client.
-Call the helper on a fresh default or named client: it rejects posthog-js's
-otherwise-silent reinitialization no-op, forces the bootstrap ID to remain
-anonymous, and verifies the live client config before publishing the
+The synchronous helper requires a fresh default or named client; the async
+helper applies the same checks once a queued client loads. Both reject posthog-js's
+otherwise-silent reinitialization no-op, force the bootstrap ID to remain
+anonymous, and verify the live client config before publishing the
 descriptor. While the C SDK is initialized, do not use `client.set_config()` to
 replace the token, host, profile, flag, or `before_send` settings. Every bridge
 call rechecks those fields and fails closed if the validated privacy pipeline
@@ -99,7 +139,7 @@ was changed; `ph_shutdown()` releases the module's pinned descriptor.
 | privacy stages | C denylist + `before_send`; sender thread (exceptions pre-enqueue) | C denylist + `before_send` on caller, then host final scrub after browser enrichment |
 | flags | SDK `/flags/` cache | posthog-js flag cache |
 | `release` | optional serializer enrichment | host finalizer enrichment |
-| `disable_geoip` | forced on events and `/flags/` | forced on events; `/flags/` requires an acknowledged proxy policy |
+| `disable_geoip` | forced on events and `/flags/` | forced on events; `/flags/` requires an explicit proxy host and policy |
 | flag exposure policy | SDK emits deduped event | passed as per-read `{ send_event }` |
 | numeric rate limit | posthog-c token bucket | ignored; descriptor acknowledges posthog-js ownership |
 | stats, dropped count | implemented by posthog-c | ignored / returns 0 |
@@ -147,12 +187,16 @@ initPostHogC(posthog, {
   // ...matching fields above...
   disable_geoip: true,
   geoip_flags: "proxy-inject-v1",
+  flags_api_host: "https://flags-proxy.example",
 })
 ```
 
 The helper forces `$geoip_disable: true` on events and rejects initialization
-without that explicit flags capability. The capability is a host assertion; the
-C/WASM module cannot inspect or enforce reverse-proxy behavior itself.
+without that explicit flags capability and a separately specified
+`flags_api_host`. It never derives the flags route from `api_host`; it normalizes
+and attests the exact proxy base, then fails closed if the live posthog-js config
+changes it. The injection capability remains a host assertion: the C/WASM
+module cannot inspect or enforce reverse-proxy behavior itself.
 
 ## Build
 
@@ -200,10 +244,27 @@ emcc @wasm/posthog-wasm.rsp /absolute/path/to/app.c -O2 -o app.js
 ```
 
 The recipe keeps the backend on strict C11 and is also what `zig build
-test-wasm` consumes. [`tests/wasm/consumer/main.c`](tests/wasm/consumer/main.c)
-is the minimal public-header-only consumer fixture. For a C++ application,
-compile the SDK recipe as C in a separate step, then link those objects into the
-C++ module; the recipe's intentional `-std=c11` flag is not a C++ driver flag.
+test-wasm` consumes. The standalone consumer fixture pairs
+[`main.c`](tests/wasm/consumer/main.c) with
+[`run.cjs`](tests/wasm/consumer/run.cjs) to load the CommonJS/classic helper
+before a modularized Emscripten factory.
+
+An Emscripten `--pre-js` file cannot import the ESM helper. Put that ordering in
+the host entry module instead, and instantiate the C/WASM module only after the
+descriptor is ready:
+
+```js
+import posthog from "posthog-js"
+import { initPostHogCAsync } from "./posthog-c-host.mjs"
+
+await initPostHogCAsync(posthog, hostSpec)
+const { default: createApp } = await import("./app.mjs")
+await createApp()
+```
+
+For a C++ application, compile the SDK recipe as C in a separate step, then
+link those objects into the C++ module; the recipe's intentional `-std=c11`
+flag is not a C++ driver flag.
 
 ### Using it
 

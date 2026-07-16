@@ -1,5 +1,5 @@
 /* Normal + Closure behavioral harness for the versioned WASM host contract. */
-import { initPostHogC } from "../../wasm/posthog-c-host.mjs";
+import { initPostHogC, initPostHogCAsync } from "../../wasm/posthog-c-host.mjs";
 
 const calls = [];
 const initCalls = [];
@@ -66,7 +66,9 @@ const posthogRoot = {
         initCalls.push({ apiKey, config, name });
         hostConfig = config;
         currentDistinctId = config["bootstrap"]["distinctID"];
-        return makeClient();
+        const client = makeClient();
+        if (typeof config["loaded"] === "function") config["loaded"].call(config, client);
+        return client;
     },
 };
 
@@ -85,6 +87,190 @@ initPostHogC(posthogRoot, {
     "person_profiles": "always",
 });
 
+let asyncLoaderCalls = 0;
+await initPostHogCAsync(async () => {
+    asyncLoaderCalls++;
+    return { "default": posthogRoot };
+}, {
+    "api_key": "probe",
+    "distinct_id": "probe-async",
+    "person_profiles": "identified_only",
+    "preload_flags": true,
+});
+
+let queuedInit = null;
+let queuedLoadedContract = false;
+let queuedClient = null;
+const descriptorBeforeQueuedInit = globalThis.__posthog_c_v1;
+const queuedReady = initPostHogCAsync({
+    "init": (apiKey, config, name) => {
+        queuedInit = { apiKey, config, name };
+        return undefined; /* official queueing snippets do not return a client */
+    },
+}, {
+    "api_key": "probe",
+    "distinct_id": "probe-queued",
+    "posthog_config": {
+        "loaded": function (loadedClient) {
+            queuedLoadedContract = loadedClient === queuedClient &&
+                this === queuedInit.config &&
+                globalThis.__posthog_c_v1 === descriptorBeforeQueuedInit;
+        },
+    },
+});
+await Promise.resolve();
+const queuedInitStayedTransactional =
+    queuedInit && globalThis.__posthog_c_v1 === descriptorBeforeQueuedInit;
+queuedInit.config["token"] = queuedInit.apiKey;
+hostConfig = queuedInit.config;
+currentDistinctId = queuedInit.config["bootstrap"]["distinctID"];
+queuedClient = makeClient();
+queuedInit.config["loaded"](queuedClient);
+const queuedResult = await queuedReady;
+const queuedInitPublished = queuedResult === queuedClient &&
+    globalThis.__posthog_c_v1.client === queuedClient;
+
+const descriptorAfterQueuedInit = globalThis.__posthog_c_v1;
+let delayedInit = null;
+let delayedClient = null;
+let delayedSettled = false;
+const delayedReady = initPostHogCAsync({
+    "init": (apiKey, config) => {
+        config["token"] = apiKey;
+        hostConfig = config;
+        currentDistinctId = config["bootstrap"]["distinctID"];
+        delayedInit = { config };
+        delayedClient = makeClient();
+        return delayedClient;
+    },
+}, {
+    "api_key": "probe",
+    "distinct_id": "probe-delayed-loaded",
+    "posthog_config": {
+        "loaded": function () { this["before_send"] = []; },
+    },
+});
+delayedReady.then(
+    () => { delayedSettled = true; },
+    () => { delayedSettled = true; },
+);
+await Promise.resolve();
+const delayedLoadedStayedPending = delayedInit && !delayedSettled &&
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+delayedInit.config["loaded"](delayedClient);
+let delayedLoadedRejected = false;
+try {
+    await delayedReady;
+} catch (_) {
+    delayedLoadedRejected = true;
+}
+const delayedLoadedStayedTransactional =
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+let mutatingInit = null;
+const mutatingReady = initPostHogCAsync({
+    "init": (apiKey, config) => {
+        mutatingInit = { apiKey, config };
+        return undefined;
+    },
+}, {
+    "api_key": "probe",
+    "distinct_id": "probe-mutating-loaded",
+    "posthog_config": {
+        "loaded": function () {
+            this["before_send"] = [];
+        },
+    },
+});
+await Promise.resolve();
+mutatingInit.config["token"] = mutatingInit.apiKey;
+hostConfig = mutatingInit.config;
+currentDistinctId = mutatingInit.config["bootstrap"]["distinctID"];
+mutatingInit.config["loaded"](makeClient());
+let mutatingLoadedRejected = false;
+try {
+    await mutatingReady;
+} catch (_) {
+    mutatingLoadedRejected = true;
+}
+const mutatingLoadedStayedTransactional =
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+
+let mismatchedClientsRejected = false;
+try {
+    await initPostHogCAsync({
+        "init": (apiKey, config) => {
+            config["token"] = apiKey;
+            hostConfig = config;
+            currentDistinctId = config["bootstrap"]["distinctID"];
+            const callbackClient = makeClient();
+            config["loaded"](callbackClient);
+            return makeClient();
+        },
+    }, {
+        "api_key": "probe",
+        "distinct_id": "probe-mismatched-client",
+    });
+} catch (_) {
+    mismatchedClientsRejected = true;
+}
+const mismatchedClientsStayedTransactional =
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+
+let callbackThenThrowRejected = false;
+try {
+    await initPostHogCAsync({
+        "init": (apiKey, config) => {
+            config["token"] = apiKey;
+            hostConfig = config;
+            currentDistinctId = config["bootstrap"]["distinctID"];
+            config["loaded"](makeClient());
+            throw new Error("init failed after loaded callback");
+        },
+    }, {
+        "api_key": "probe",
+        "distinct_id": "probe-callback-then-throw",
+    });
+} catch (_) {
+    callbackThenThrowRejected = true;
+}
+const callbackThenThrowStayedTransactional =
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+
+let falsyLoadedThrowRejected = false;
+try {
+    await initPostHogCAsync({
+        "init": (apiKey, config) => {
+            config["token"] = apiKey;
+            hostConfig = config;
+            currentDistinctId = config["bootstrap"]["distinctID"];
+            const readyClient = makeClient();
+            config["loaded"](readyClient);
+            return readyClient;
+        },
+    }, {
+        "api_key": "probe",
+        "distinct_id": "probe-falsy-loaded-throw",
+        "posthog_config": {
+            "loaded": function () { throw null; },
+        },
+    });
+} catch (error) {
+    falsyLoadedThrowRejected = error === null;
+}
+const falsyLoadedThrowStayedTransactional =
+    globalThis.__posthog_c_v1 === descriptorAfterQueuedInit;
+
+let invalidLoadedRejected = false;
+try {
+    await initPostHogCAsync(posthogRoot, {
+        "api_key": "probe",
+        "distinct_id": "probe-invalid-loaded",
+        "posthog_config": { "loaded": true },
+    });
+} catch (_) {
+    invalidLoadedRejected = true;
+}
+
 let missingGeoipPolicyRejected = false;
 try {
     initPostHogC(posthogRoot, {
@@ -94,6 +280,18 @@ try {
     });
 } catch (_) {
     missingGeoipPolicyRejected = true;
+}
+
+let missingFlagsHostRejected = false;
+try {
+    initPostHogC(posthogRoot, {
+        "api_key": "probe",
+        "distinct_id": "probe-flags-host",
+        "disable_geoip": true,
+        "geoip_flags": "proxy-inject-v1",
+    });
+} catch (_) {
+    missingFlagsHostRejected = true;
 }
 
 let disabledFlagsRejected = false;
@@ -118,6 +316,7 @@ initPostHogC(posthogRoot, {
     "release": "wasm-release@1",
     "disable_geoip": true,
     "geoip_flags": "proxy-inject-v1",
+    "flags_api_host": "https://flags-proxy.example/GeoIP///",
     "name": "wasm-client",
     "final_property_denylist": ["$browser_secret", "$process_person_profile"],
     "final_before_send": (data) => {
@@ -149,6 +348,8 @@ check(initCalls[1].config.person_profiles === "always",
       "host helper maps PH_ALWAYS");
 check(missingGeoipPolicyRejected,
       "host helper rejects GeoIP event-only opt-out without flags proxy policy");
+check(missingFlagsHostRejected,
+      "host helper rejects a flags proxy policy without an explicit flags host");
 check(disabledFlagsRejected,
       "host helper rejects a posthog-js config that disables the public flag API");
 check(initCalls.at(-1).name === "wasm-client",
@@ -158,6 +359,16 @@ check(globalThis.__posthog_c_v1 === globalThis.window.__posthog_c_v1 &&
       "host helper publishes one frozen descriptor");
 check(globalThis.__posthog_c_v1.api_host === "https://us.i.posthog.com",
       "host helper normalizes trailing host slashes");
+check(initCalls.at(-1).config.flags_api_host === "https://flags-proxy.example/GeoIP" &&
+      globalThis.__posthog_c_v1.flags_api_host === "https://flags-proxy.example/GeoIP",
+      "host helper normalizes, configures, and attests the explicit flags host");
+hostConfig["flags_api_host"] = "https://wrong-flags-proxy.example";
+check(globalThis.__posthog_c_v1.checked_client() === null,
+      "changing the live flags host invalidates the host contract");
+hostConfig["flags_api_host"] = "https://flags-proxy.example/GeoIP";
+check(globalThis.__posthog_c_v1.checked_client() === globalThis.__posthog_c_v1.client,
+      "restoring the attested flags host restores the host contract");
+
 check(initCalls.at(-1).config.bootstrap.isIdentifiedID === false,
       "host helper keeps the bootstrap install id anonymous");
 check(Object.isFrozen(initCalls.at(-1).config.before_send),
@@ -238,6 +449,9 @@ check(calls.some((c) => c.fn === "capture" && c.event === "$create_alias" &&
       "explicit alias originals remain valid SDK-owned identities");
 check(calls.filter((c) => c.fn === "capture" && c.event === "$create_alias").length === 2,
       "empty aliases never reach the host");
+check(calls.some((c) => c.event === "restored_flags_host") &&
+      !calls.some((c) => c.event === "mutated_flags_host"),
+      "bridge rejects flags-host drift and recovers after restoration");
 
 const group = calls.find((c) => c.fn === "group");
 check(group && group.type === "game" && group.key === "asteroids",
@@ -284,6 +498,31 @@ check(excFrames && excFrames.every((f) => !("module" in f)),
 check(!calls.some((c) => c.fn === "capture" && c.event === "$exception" &&
                          c.props.$exception_list?.[0]?.type === "OOMException"),
       "exception serialization failure emitted no event");
+check(asyncLoaderCalls === 1 && initCalls[2].config.bootstrap.distinctID === "probe-async",
+      "async host loader accepts a promised module namespace");
+check(queuedInitStayedTransactional,
+      "queueing snippet leaves the previous descriptor pinned until its client loads");
+check(queuedInitPublished,
+      "queueing snippet publishes and resolves after its real client loads");
+check(queuedLoadedContract,
+      "queueing snippet preserves the user loaded callback's client and binding");
+check(delayedLoadedStayedPending && delayedLoadedRejected &&
+      delayedLoadedStayedTransactional,
+      "async init waits for delayed loaded and revalidates before publication");
+check(mutatingLoadedRejected && mutatingLoadedStayedTransactional,
+      "a loaded callback cannot weaken the contract before descriptor publication");
+check(mismatchedClientsRejected && mismatchedClientsStayedTransactional,
+      "callback/return client disagreement fails without replacing the descriptor");
+check(callbackThenThrowRejected && callbackThenThrowStayedTransactional,
+      "an init throw after loaded cannot publish or resolve the descriptor");
+check(falsyLoadedThrowRejected && falsyLoadedThrowStayedTransactional,
+      "a falsy loaded-callback throw cannot publish or resolve the descriptor");
+check(invalidLoadedRejected,
+      "an invalid user loaded callback is rejected before posthog-js init");
+check(globalThis.PostHogC.initPostHogC === initPostHogC &&
+      globalThis.PostHogC.initPostHogCAsync === initPostHogCAsync &&
+      Object.isFrozen(globalThis.PostHogC),
+      "ESM facade and classic-script API share one frozen implementation");
 
 console.log(`\nwasm harness: ${calls.length} host calls, ${checks} checks, ${failures} failures`);
 process.exit(failures ? 1 : 0);

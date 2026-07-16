@@ -217,7 +217,8 @@ typedef struct ph_config {
     int disable_geoip;            /* opt out of GeoIP enrichment for events and
                                    * feature-flag evaluation (default 0). Native
                                    * applies this directly; wasm requires the
-                                   * helper's acknowledged flags-proxy policy. */
+                                   * helper's explicit flags-proxy host and
+                                   * acknowledged injection policy. */
 
     ph_before_send_fn before_send; /* scrubber; NULL = pass-through */
     ph_log_fn on_log;              /* diagnostics sink; NULL = silent */

@@ -166,14 +166,14 @@ void suite_scrub(void) {
         ph_props_init(&p);
         ph_props_set_str(&p, "secret", "xyz");
         ph_props_set_str(&p, "keep", "ok");
-        ph_props_set_str(&p, "token", "abc");
+        ph_props_set_str(&p, "token", "denylisted-token-value");
         ph_capture("event", &p);
         ph_flush(2000);
         CHECK_CONTAINS(mock_batch(0), "\"keep\":\"ok\"");
         CHECK_NOT_CONTAINS(mock_batch(0), "\"secret\"");
         CHECK_NOT_CONTAINS(mock_batch(0), "\"token\"");
         CHECK_NOT_CONTAINS(mock_batch(0), "xyz");
-        CHECK_NOT_CONTAINS(mock_batch(0), "abc");
+        CHECK_NOT_CONTAINS(mock_batch(0), "denylisted-token-value");
         ph_shutdown();
     }
 

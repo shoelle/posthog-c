@@ -43,12 +43,16 @@ Native capture is at-most-once by design: a full ring drops the oldest event (an
 
 ## WASM host contract
 
-[`wasm/posthog-c-host.mjs`](wasm/posthog-c-host.mjs) is the supported bootstrap.
-It initializes a default or named posthog-js client, verifies the live token,
-host, anonymous bootstrap identity, profile/flag settings, and finalizer, then
-publishes a frozen versioned descriptor. `ph_init()` validates and pins that
-descriptor transactionally; every bridge call rechecks its live privacy
-contract and fails closed if the host changes it.
+[`wasm/posthog-c-host.mjs`](wasm/posthog-c-host.mjs) is the ESM facade over the
+classic-script/CommonJS [`posthog-c-host.js`](wasm/posthog-c-host.js); both are
+supported bootstraps. The synchronous entry takes a live client, while the
+async entry also owns the queueing snippet's deferred `loaded` handoff. The
+helper initializes a default or named posthog-js client, verifies the live token,
+event host, explicit flags host (when required), anonymous bootstrap identity,
+profile/flag settings, and finalizer, then publishes a frozen versioned
+descriptor. `ph_init()` validates and pins that descriptor transactionally;
+every bridge call rechecks its live privacy contract and fails closed if the
+host changes it.
 
 Privacy has two stages on WASM. The C denylist/`before_send` sees bounded C
 properties on the caller thread. The helper's final hooks see posthog-js browser
