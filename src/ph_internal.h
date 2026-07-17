@@ -129,6 +129,17 @@ typedef struct ph_flag {
 
 #define PH_FLAG_RELOAD_HISTORY_CAP 8
 
+/* Outcome of one queued /flags/ refresh. A request is superseded when the
+ * identity/group evaluation context changes before its response can be
+ * applied. Internal: drives the blocking ph_reload_feature_flags(). */
+typedef enum ph_feature_flag_reload_status {
+    PH_FEATURE_FLAG_RELOAD_UNKNOWN = 0,
+    PH_FEATURE_FLAG_RELOAD_PENDING = 1,
+    PH_FEATURE_FLAG_RELOAD_SUCCESS = 2,
+    PH_FEATURE_FLAG_RELOAD_FAILED = 3,
+    PH_FEATURE_FLAG_RELOAD_SUPERSEDED = 4
+} ph_feature_flag_reload_status;
+
 typedef struct ph_flag_reload_record {
     uint64_t request_id;
     uint64_t context_gen;
@@ -301,7 +312,7 @@ ph_result ph__submit_event(int kind, unsigned char base_flags, const char *name,
                       const char *extra, size_t extra_len);
 
 /* Caller holds g_ph.lock. Clears the flag cache, advances the context
- * generation, and supersedes old-context public reload tokens. */
+ * generation, and supersedes old-context reload tickets. */
 void ph__flags_context_changed_locked(void);
 
 /* Exception builder with additional internal event flags. Crash replay uses
@@ -321,7 +332,7 @@ int ph__sender_start(void);
 void ph__sender_stop_and_join(void);
 void ph__sender_wake(void);
 
-/* Feature flags (ph_flags.c). Auto requests and public tickets share one
+/* Feature flags (ph_flags.c). Auto requests and reload tickets share one
  * context-coalesced sender job. The sender takes/completes jobs through these
  * helpers; fetch reports a terminal outcome after parsing/applying /flags/. */
 void ph__flags_request_auto_refresh(void);
@@ -331,6 +342,14 @@ void ph__flags_complete_fetch(uint64_t generation,
 /* Sender is stopping: terminate every pending reload so blocking waiters exit. */
 void ph__flags_abort_pending(void);
 ph_feature_flag_reload_status ph__flags_fetch(uint64_t context_gen);
+/* Queue a refresh without waiting; same-context calls coalesce onto the same
+ * nonzero ticket, and terminal outcomes stay queryable in a small fixed
+ * history (an evicted, zero, or prior-lifecycle ticket reads UNKNOWN; partial
+ * /flags/ responses merge into the cache but finish FAILED). PH_ERR_FULL only
+ * when every history slot is still pending. ph_reload_feature_flags() is the
+ * public blocking wrapper over these. */
+ph_result ph__flags_reload_async(uint64_t *request_id);
+ph_feature_flag_reload_status ph__flags_reload_status(uint64_t request_id);
 int ph__flags_is_enabled(const char *key, int fallback);
 ph_result ph__flags_get(const char *key, char *out, int cap);
 ph_result ph__flags_get_payload(const char *key, char *out, int cap);

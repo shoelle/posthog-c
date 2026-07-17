@@ -368,18 +368,6 @@ void ph_capture_exception(const ph_exception *ex);
  */
 int ph_is_feature_enabled(const char *key, int fallback);
 
-/* State of a native asynchronous feature-flag reload request. A request is
- * superseded when the identity/group evaluation context changes before its
- * response can be applied. WASM delegates reload ownership to posthog-js and
- * reports UNKNOWN for query tokens. */
-typedef enum ph_feature_flag_reload_status {
-    PH_FEATURE_FLAG_RELOAD_UNKNOWN = 0,
-    PH_FEATURE_FLAG_RELOAD_PENDING = 1,
-    PH_FEATURE_FLAG_RELOAD_SUCCESS = 2,
-    PH_FEATURE_FLAG_RELOAD_FAILED = 3,
-    PH_FEATURE_FLAG_RELOAD_SUPERSEDED = 4
-} ph_feature_flag_reload_status;
-
 /*
  * Copy the resolved flag value (variant key, or "true"/"false") into out
  * (NUL-terminated, capped at cap). Returns PH_OK if the flag was found,
@@ -389,21 +377,6 @@ ph_result ph_get_feature_flag(const char *key, char *out, int cap);
 
 /* Copy the flag's JSON payload into out. Same return contract as above. */
 ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap);
-
-/* Queue a native feature-flag refresh without waiting for network I/O. Calls
- * for the same evaluation context coalesce and may return the same nonzero
- * request id. The SDK retains a bounded history of recent terminal requests;
- * an evicted token, zero, or a token from an earlier SDK lifecycle is UNKNOWN.
- * Partial /flags/ responses are merged into the cache but finish as FAILED.
- * Returns PH_OK, PH_ERR_BADARG for a NULL output, PH_ERR_DISABLED when off, or
- * PH_ERR_FULL only if the fixed request history has no reclaimable slot.
- * Enabled WASM returns PH_ERR because posthog-js does not expose compatible
- * per-request completion status. */
-ph_result ph_reload_feature_flags_async(uint64_t *request_id);
-
-/* Query a token returned by ph_reload_feature_flags_async(). */
-ph_feature_flag_reload_status ph_get_feature_flag_reload_status(
-    uint64_t request_id);
 
 /* Re-evaluate feature flags now. Native queues through the sender and blocks
  * until the current context succeeds or fails, retrying transparently if an

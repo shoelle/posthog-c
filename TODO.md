@@ -20,15 +20,6 @@ rather than report partial truth.
 - **macOS Secure Transport is deprecated** in favour of Network.framework. It works; migrating would silence the deprecation and gain async IO.
 - **Linux ships a hard OpenSSL dependency.** Fine for a Linux SDK (it's the de-facto system TLS), but a vendored or optional backend would suit a no-dependencies embed. A deliberate trade, not an oversight.
 
-## Simplification candidates
-
-Open questions, not defects - each trades a working mechanism for less
-surface:
-
-- **Per-bridge-call host revalidation (WASM).** Every bridge call re-verifies the descriptor's method and live-config identity through `checked_client()`. Validating at init plus an explicit revalidate hook would be simpler and cheaper; the per-call check guards against accidental host reconfiguration mid-session (see the WASM host contract in DESIGN.md), not a hostile page.
-- **The public flag-reload token API.** `ph_reload_feature_flags_async` + `ph_get_feature_flag_reload_status` is surface no official PostHog SDK exposes, and WASM degrades it to `PH_ERR`/`UNKNOWN`. The internal coalescing/supersession stays regardless (the blocking reload needs it to be correct across identity changes); the rationale for the public form is in DESIGN.md. Demote it to internal if it sees no real use.
-- **Config surface.** `ph_config` is 25 fields; each is documented and defensible, but together they are already a mature-SDK surface. Resist further growth.
-
 ## Nice-to-have
 
 - **Model offline-spill as a transport** behind the `ph_transport` seam instead of special-casing it in the sender - the 429/quota hold would then compose as "route to the disk transport while blocked".
@@ -44,7 +35,9 @@ review decisions (reload guard placement, reload-history slots, the
 - **5xx is retried with backoff**, not discarded - the better default for a transient server blip.
 - **No session replay**: nothing to record from C, and a privacy liability.
 - **WASM `ph_capture` returns `PH_OK` even when the host finalizer drops the event**: capture is fire-and-forget on both backends and `PH_OK` means "accepted for delivery", not "delivered" - native behaves the same for denylist/`before_send`/ring drops.
-- **WASM `ph_reload_feature_flags_async` returns `PH_ERR`**: posthog-js exposes no per-reload completion carrying failure and request/context identity, so a token API there would lie; the void reload is the honest portable form (see `wasm/README.md`).
+- **The flag-reload ticket machinery is internal.** `ph_reload_feature_flags()` is the whole public reload surface; the coalescing/supersession tickets behind it (`ph__flags_reload_async` / `ph__flags_reload_status`) stay internal until a real consumer needs per-request observability - and any public form would also need a cross-backend answer posthog-js doesn't offer.
+- **Per-bridge-call host revalidation stays (WASM)**: `checked_client()` is a handful of identity comparisons per event - far cheaper than the JSON work beside it - and it backs the documented fail-closed guarantee with tests. Removing it would trade a tested guarantee for a negligible code win.
+- **`ph_config` holds at its current surface**: 25 documented fields is already a mature-SDK surface; a new knob needs to clear a high bar.
 
 ## Keep strong (don't regress)
 

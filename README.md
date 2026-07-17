@@ -104,11 +104,9 @@ automatic properties, batching, profiles, flag evaluation, retry, and
 persistence belong to each backend's delivery owner and are not
 byte-for-byte equivalent.
 
-Native `ph_reload_feature_flags_async()` coalesces refreshes on the sender and
-returns a request id you can poll with `ph_get_feature_flag_reload_status()`;
-the blocking `ph_reload_feature_flags()` wraps it. On WASM the async form
-returns `PH_ERR` (posthog-js exposes no per-request completion) and the void
-form schedules a posthog-js reload.
+`ph_reload_feature_flags()` re-evaluates flags after an identity or group
+change: native queues the refresh on the sender and blocks until it completes;
+WASM schedules a posthog-js reload.
 
 ## Build
 

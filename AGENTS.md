@@ -150,10 +150,12 @@ settled decisions live in TODO.md ("Settled decisions").
   in-thread, so driving the branch needs a two-POST-after-stop interleaving
   that hangs the join. Hand-verified (`remaining_ms == 0` yields `-1`,
   otherwise a value in `[1, request_timeout_ms]`); left uncovered by choice.
-- **WASM keeps `ph_reload_feature_flags_async` returning `PH_ERR` and query
-  tokens `UNKNOWN`**: posthog-js exposes a fire-and-forget reload plus a
-  global change listener, not completion correlated to one reload and
-  evaluation context - cached/local changes can fire the listener, quota
-  failures may not, and queued identity changes expose no generation. Revisit
-  only if posthog-js ships a public per-reload completion primitive carrying
-  failure and request/context identity.
+- **No per-request flag-reload observability on WASM** (the internal ticket
+  API - `ph__flags_reload_async` / `ph__flags_reload_status` - is
+  native-only): posthog-js exposes a fire-and-forget reload plus a global
+  change listener, not completion correlated to one reload and evaluation
+  context - cached/local changes can fire the listener, quota failures may
+  not, and queued identity changes expose no generation. Don't make the
+  ticket API public without a cross-backend answer; revisit only if
+  posthog-js ships a per-reload completion primitive carrying failure and
+  request/context identity.

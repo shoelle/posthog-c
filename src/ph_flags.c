@@ -80,7 +80,7 @@ static uint64_t next_reload_request_locked(void) {
 
 /* Return the queued/in-flight generation for this exact context, or create one.
  * A stale queued job can be discarded without network I/O; an old in-flight job
- * is allowed to finish, but its public token has already been superseded. */
+ * is allowed to finish, but its ticket has already been superseded. */
 static uint64_t schedule_reload_locked(uint64_t context_gen) {
     uint64_t generation;
     if (g_ph.flags_fetch_inflight &&
@@ -103,7 +103,7 @@ static uint64_t schedule_reload_locked(uint64_t context_gen) {
 }
 
 /* A flag value is meaningful only for the exact identity + group context that
- * produced it. Caller holds g_ph.lock, so cache invalidation and public-ticket
+ * produced it. Caller holds g_ph.lock, so cache invalidation and ticket
  * supersession are observed atomically. */
 void ph__flags_context_changed_locked(void) {
     g_ph.flag_count = 0;
@@ -505,7 +505,7 @@ ph_result ph_get_feature_flag_payload(const char *key, char *out, int cap) {
     return ph__flags_get_payload(key, out, cap);
 }
 
-ph_result ph_reload_feature_flags_async(uint64_t *request_id) {
+ph_result ph__flags_reload_async(uint64_t *request_id) {
     ph_flag_reload_record *record;
     uint64_t generation;
     if (!request_id) return PH_ERR_BADARG;
@@ -521,8 +521,7 @@ ph_result ph_reload_feature_flags_async(uint64_t *request_id) {
     return record ? PH_OK : PH_ERR_FULL;
 }
 
-ph_feature_flag_reload_status ph_get_feature_flag_reload_status(
-    uint64_t request_id) {
+ph_feature_flag_reload_status ph__flags_reload_status(uint64_t request_id) {
     ph_flag_reload_record *record;
     ph_feature_flag_reload_status status = PH_FEATURE_FLAG_RELOAD_UNKNOWN;
     if (!request_id || !g_ph.enabled) return status;
@@ -537,7 +536,7 @@ void ph_reload_feature_flags(void) {
     ph_feature_flag_reload_status status;
     uint64_t request_id;
     for (;;) {
-        if (ph_reload_feature_flags_async(&request_id) != PH_OK) return;
+        if (ph__flags_reload_async(&request_id) != PH_OK) return;
         /* A sender callback can safely attach to the current job, but waiting
          * for that same sender to complete it would deadlock. */
         if (ph__in_callback || ph_thread_is_current(&g_ph.sender)) return;

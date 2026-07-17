@@ -279,15 +279,6 @@ int wasm_run_test(void) {
         strcmp(flag, "false") == 0)
         ph_capture("false_flag_ok", NULL);
     {
-        uint64_t request_id = 99;
-        if (ph_reload_feature_flags_async(&request_id) != PH_ERR ||
-            request_id != 0 ||
-            ph_get_feature_flag_reload_status(99) !=
-                PH_FEATURE_FLAG_RELOAD_UNKNOWN)
-            failures++;
-    }
-
-    {
         ph_stackframe frames[2];
         ph_props extra;
         ph_exception ex;

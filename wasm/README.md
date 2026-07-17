@@ -148,13 +148,6 @@ if the live posthog-js config changes it. The injection capability remains a
 host assertion: the C/WASM module cannot inspect or enforce reverse-proxy
 behavior itself.
 
-## Feature-flag reload status
-
-posthog-js does not expose per-request reload completion, so enabled WASM
-returns `PH_ERR` from `ph_reload_feature_flags_async()` and reports `UNKNOWN`
-for query tokens. The void `ph_reload_feature_flags()` schedules a posthog-js
-reload.
-
 ## Building with Emscripten
 
 For source consumption with Emscripten, [`posthog-wasm.rsp`](posthog-wasm.rsp)

@@ -36,13 +36,11 @@ captured, not when it was sent.
 
 Feature-flag refreshes ride the same sender. Same-context requests coalesce,
 and an identity/group change supersedes in-flight requests, so a slow response
-can never overwrite a newer user's flags. Outcomes are exposed as pollable
-request tokens (`ph_reload_feature_flags_async`) because C has no ambient
-completion callback - polling a token is the C-idiomatic way to observe an
-async result - and the blocking `ph_reload_feature_flags()` is built on top of
-them. Shutdown gives queued and offline network work one `request_timeout_ms`
-budget, then persists what remains (or counts it dropped when no offline path
-is configured).
+can never overwrite a newer user's flags. The blocking
+`ph_reload_feature_flags()` polls an internal request ticket and retries
+transparently when its context is superseded. Shutdown gives queued and
+offline network work one `request_timeout_ms` budget, then persists what
+remains (or counts it dropped when no offline path is configured).
 
 ## Key decisions
 

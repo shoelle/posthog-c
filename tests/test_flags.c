@@ -55,7 +55,7 @@ static ph_feature_flag_reload_status wait_reload_terminal(uint64_t request_id) {
     int i;
     ph_feature_flag_reload_status status = PH_FEATURE_FLAG_RELOAD_PENDING;
     for (i = 0; i < 2000; i++) {
-        status = ph_get_feature_flag_reload_status(request_id);
+        status = ph__flags_reload_status(request_id);
         if (status != PH_FEATURE_FLAG_RELOAD_PENDING) return status;
         ph_sleep_ms(1);
     }
@@ -66,7 +66,7 @@ static ph_feature_flag_reload_status wait_current_reload(void) {
     ph_feature_flag_reload_status status;
     uint64_t request_id;
     do {
-        if (ph_reload_feature_flags_async(&request_id) != PH_OK)
+        if (ph__flags_reload_async(&request_id) != PH_OK)
             return PH_FEATURE_FLAG_RELOAD_UNKNOWN;
         status = wait_reload_terminal(request_id);
     } while (status == PH_FEATURE_FLAG_RELOAD_SUPERSEDED);
@@ -85,10 +85,10 @@ void suite_flags(void) {
     /* --- async argument/disabled behavior is side-effect free --- */
     {
         uint64_t request_id = 99;
-        CHECK(ph_reload_feature_flags_async(NULL) == PH_ERR_BADARG);
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_ERR_DISABLED);
+        CHECK(ph__flags_reload_async(NULL) == PH_ERR_BADARG);
+        CHECK(ph__flags_reload_async(&request_id) == PH_ERR_DISABLED);
         CHECK(request_id == 0);
-        CHECK(ph_get_feature_flag_reload_status(99) ==
+        CHECK(ph__flags_reload_status(99) ==
               PH_FEATURE_FLAG_RELOAD_UNKNOWN);
     }
 
@@ -102,12 +102,12 @@ void suite_flags(void) {
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
         mock_set_fetch_blocked(1);
-        CHECK(ph_reload_feature_flags_async(&first) == PH_OK);
+        CHECK(ph__flags_reload_async(&first) == PH_OK);
         CHECK(first != 0);
         CHECK(mock_wait_fetch_count(1, 2000));
-        CHECK(ph_get_feature_flag_reload_status(first) ==
+        CHECK(ph__flags_reload_status(first) ==
               PH_FEATURE_FLAG_RELOAD_PENDING);
-        CHECK(ph_reload_feature_flags_async(&coalesced) == PH_OK);
+        CHECK(ph__flags_reload_async(&coalesced) == PH_OK);
         CHECK(coalesced == first);
         CHECK(mock_fetch_count() == 1);
         mock_set_fetch_blocked(0);
@@ -128,14 +128,14 @@ void suite_flags(void) {
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
         mock_set_fetch_blocked(1);             /* pin the /flags/ fetch in-flight */
-        CHECK(ph_reload_feature_flags_async(&req) == PH_OK);
+        CHECK(ph__flags_reload_async(&req) == PH_OK);
         CHECK(mock_wait_fetch_count(1, 2000)); /* the sender is now parked in fetch */
-        CHECK(ph_get_feature_flag_reload_status(req) ==
+        CHECK(ph__flags_reload_status(req) ==
               PH_FEATURE_FLAG_RELOAD_PENDING);
         /* The step ph__sender_stop_and_join() now runs once the sender exits:
          * a pending reload must become terminal, not stay PENDING forever. */
         ph__flags_abort_pending();
-        CHECK(ph_get_feature_flag_reload_status(req) ==
+        CHECK(ph__flags_reload_status(req) ==
               PH_FEATURE_FLAG_RELOAD_FAILED);
         mock_set_fetch_blocked(0);             /* release the orphaned fetch */
         ph_shutdown();
@@ -155,24 +155,24 @@ void suite_flags(void) {
         mock_install();
 
         mock_set_status(500);
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_OK);
+        CHECK(ph__flags_reload_async(&request_id) == PH_OK);
         CHECK(wait_reload_terminal(request_id) == PH_FEATURE_FLAG_RELOAD_FAILED);
         CHECK(atomic_load(&log_calls) > 0);
 
         mock_set_status(200);
         mock_set_flags_response("not-json");
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_OK);
+        CHECK(ph__flags_reload_async(&request_id) == PH_OK);
         CHECK(wait_reload_terminal(request_id) == PH_FEATURE_FLAG_RELOAD_FAILED);
 
         mock_set_flags_response(QUOTA_FLAGS_JSON);
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_OK);
+        CHECK(ph__flags_reload_async(&request_id) == PH_OK);
         CHECK(wait_reload_terminal(request_id) == PH_FEATURE_FLAG_RELOAD_FAILED);
 
         mock_set_flags_response(FLAGS_JSON);
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_OK);
+        CHECK(ph__flags_reload_async(&request_id) == PH_OK);
         CHECK(wait_reload_terminal(request_id) == PH_FEATURE_FLAG_RELOAD_SUCCESS);
         mock_set_flags_response(PARTIAL_FLAGS_JSON);
-        CHECK(ph_reload_feature_flags_async(&request_id) == PH_OK);
+        CHECK(ph__flags_reload_async(&request_id) == PH_OK);
         CHECK(wait_reload_terminal(request_id) == PH_FEATURE_FLAG_RELOAD_FAILED);
         CHECK(ph_is_feature_enabled("my-flag", 1) == 0); /* returned value merged */
         {
@@ -193,19 +193,19 @@ void suite_flags(void) {
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
         mock_set_fetch_blocked(1);
-        CHECK(ph_reload_feature_flags_async(&old_request) == PH_OK);
+        CHECK(ph__flags_reload_async(&old_request) == PH_OK);
         CHECK(mock_wait_fetch_count(1, 2000));
         ph_reset(); /* changes identity without queueing a second control mutation */
-        CHECK(ph_get_feature_flag_reload_status(old_request) ==
+        CHECK(ph__flags_reload_status(old_request) ==
               PH_FEATURE_FLAG_RELOAD_SUPERSEDED);
-        CHECK(ph_reload_feature_flags_async(&new_request) == PH_OK);
+        CHECK(ph__flags_reload_async(&new_request) == PH_OK);
         CHECK(new_request != old_request);
-        CHECK(ph_get_feature_flag_reload_status(new_request) ==
+        CHECK(ph__flags_reload_status(new_request) ==
               PH_FEATURE_FLAG_RELOAD_PENDING);
         mock_set_fetch_blocked(0);
         CHECK(mock_wait_fetch_count(2, 2000));
         CHECK(wait_reload_terminal(new_request) == PH_FEATURE_FLAG_RELOAD_SUCCESS);
-        CHECK(ph_get_feature_flag_reload_status(old_request) ==
+        CHECK(ph__flags_reload_status(old_request) ==
               PH_FEATURE_FLAG_RELOAD_SUPERSEDED);
         CHECK(mock_fetch_count() == 2);
         ph_shutdown();
@@ -223,12 +223,12 @@ void suite_flags(void) {
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
         for (i = 0; i < PH_FLAG_RELOAD_HISTORY_CAP + 1; i++) {
-            CHECK(ph_reload_feature_flags_async(&ids[i]) == PH_OK);
+            CHECK(ph__flags_reload_async(&ids[i]) == PH_OK);
             CHECK(wait_reload_terminal(ids[i]) == PH_FEATURE_FLAG_RELOAD_SUCCESS);
         }
-        CHECK(ph_get_feature_flag_reload_status(ids[0]) ==
+        CHECK(ph__flags_reload_status(ids[0]) ==
               PH_FEATURE_FLAG_RELOAD_UNKNOWN);
-        CHECK(ph_get_feature_flag_reload_status(ids[PH_FLAG_RELOAD_HISTORY_CAP]) ==
+        CHECK(ph__flags_reload_status(ids[PH_FLAG_RELOAD_HISTORY_CAP]) ==
               PH_FEATURE_FLAG_RELOAD_SUCCESS);
         ph_shutdown();
 
@@ -237,9 +237,9 @@ void suite_flags(void) {
         mock_reset();
         mock_install();
         mock_set_flags_response(FLAGS_JSON);
-        CHECK(ph_get_feature_flag_reload_status(ids[PH_FLAG_RELOAD_HISTORY_CAP]) ==
+        CHECK(ph__flags_reload_status(ids[PH_FLAG_RELOAD_HISTORY_CAP]) ==
               PH_FEATURE_FLAG_RELOAD_UNKNOWN);
-        CHECK(ph_reload_feature_flags_async(&next_lifecycle) == PH_OK);
+        CHECK(ph__flags_reload_async(&next_lifecycle) == PH_OK);
         CHECK(next_lifecycle != ids[PH_FLAG_RELOAD_HISTORY_CAP]);
         CHECK(wait_reload_terminal(next_lifecycle) ==
               PH_FEATURE_FLAG_RELOAD_SUCCESS);

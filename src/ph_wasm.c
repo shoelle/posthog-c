@@ -666,19 +666,6 @@ void ph_reload_feature_flags(void) {
         wasm_log(PH_LOG_ERROR, "wasm: host feature flag reload failed");
 }
 
-ph_result ph_reload_feature_flags_async(uint64_t *request_id) {
-    if (request_id) *request_id = 0;
-    if (!request_id) return PH_ERR_BADARG;
-    if (!g_enabled || !g_identity_ok) return PH_ERR_DISABLED;
-    return PH_ERR; /* posthog-js exposes no compatible per-request completion */
-}
-
-ph_feature_flag_reload_status ph_get_feature_flag_reload_status(
-    uint64_t request_id) {
-    (void)request_id;
-    return PH_FEATURE_FLAG_RELOAD_UNKNOWN;
-}
-
 /* posthog-js owns delivery and its own drop accounting; nothing to report. */
 uint64_t ph_dropped_events(void) { return 0; }
 
