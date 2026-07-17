@@ -8,11 +8,7 @@
 
 ## Client-side drop reporting
 
-Decide whether an opt-in SDK health event should ship the `on_stats` snapshot
-(queue depth + drops broken down by reason) to PostHog itself. WASM delivery
-and loss accounting stay host-owned: posthog-js exposes no equivalent
-snapshot, so `on_stats` is native-only and `ph_dropped_events()` returns zero
-rather than report partial truth.
+Decide whether an opt-in SDK health event should ship the `on_stats` snapshot (queue depth + drops broken down by reason) to PostHog itself. WASM delivery and loss accounting stay host-owned: posthog-js exposes no equivalent snapshot, so `on_stats` is native-only and `ph_dropped_events()` returns zero rather than report partial truth.
 
 ## TLS
 
@@ -27,9 +23,7 @@ rather than report partial truth.
 
 ## Settled decisions
 
-Deliberate trades, recorded so they aren't re-opened by accident. Code-level
-review decisions (reload guard placement, reload-history slots, the
-`post_body` timeout branch, WASM reload-status details) live in AGENTS.md.
+Deliberate trades, recorded so they aren't re-opened by accident. Code-level review decisions (reload guard placement, reload-history slots, the `post_body` timeout branch, WASM reload-status details) live in AGENTS.md.
 
 - **No run directories, lockfiles, or tiered cache pruning** (as full crash-reporting stacks carry): one bounded NDJSON spill plus a one-shot crash record is the right size for in-process `signal_crash`; richer on-disk state is a `minidump_crash` concern.
 - **5xx is retried with backoff**, not discarded - the better default for a transient server blip.

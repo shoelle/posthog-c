@@ -52,18 +52,11 @@ posthog::identify("user-123");
 
 See [`examples/quickstart.c`](examples/quickstart.c) and [`examples/quickstart.cpp`](examples/quickstart.cpp).
 
-`distinct_id` is required. Supply a random install/device ID loaded from your
-application's durable settings, then replace it with `ph_identify()` after sign
-in. `ph_reset()` deliberately rolls a new anonymous ID on logout; read it with
-`ph_get_distinct_id()` and persist it before the next launch.
+`distinct_id` is required. Supply a random install/device ID loaded from your application's durable settings, then replace it with `ph_identify()` after sign in. `ph_reset()` deliberately rolls a new anonymous ID on logout; read it with `ph_get_distinct_id()` and persist it before the next launch.
 
 ## WASM
 
-The same C API compiles with Emscripten into a shim over a host-loaded
-posthog-js client: delivery, persistence, and browser enrichment stay in the
-JS SDK, and typed C properties serialize through the same encoder the native
-backend uses. Initialize posthog-js through the host helper before
-`ph_init()`:
+The same C API compiles with Emscripten into a shim over a host-loaded posthog-js client: delivery, persistence, and browser enrichment stay in the JS SDK, and typed C properties serialize through the same encoder the native backend uses. Initialize posthog-js through the host helper before `ph_init()`:
 
 ```js
 import posthog from "posthog-js"
@@ -76,12 +69,7 @@ initPostHogC(posthog, {
 })
 ```
 
-The helper verifies the live client, then publishes a frozen descriptor that
-`ph_init()` - called with a matching C config - validates and pins; bridge
-calls fail closed if the host contract changes afterwards. Async and
-classic-script bootstraps, the config ownership split, the two
-privacy-scrubber stages, strict GeoIP opt-out, and the Emscripten build recipe
-are covered in [`wasm/README.md`](wasm/README.md).
+The helper verifies the live client, then publishes a frozen descriptor that `ph_init()` - called with a matching C config - validates and pins; bridge calls fail closed if the host contract changes afterwards. Async and classic-script bootstraps, the config ownership split, the two privacy-scrubber stages, strict GeoIP opt-out, and the Emscripten build recipe are covered in [`wasm/README.md`](wasm/README.md).
 
 ### Backend contract
 
@@ -98,15 +86,9 @@ are covered in [`wasm/README.md`](wasm/README.md).
 | stats, dropped count | implemented by posthog-c | ignored / returns 0 |
 | `ph_flush`, `ph_shutdown` | flushes; shutdown gets one request-timeout drain budget, then spill/drop | no-op / releases shim state only |
 
-Both backends share the fixed C API, typed property encoding, denylist
-behavior, and event/control-property privacy tests. Timestamps, UUIDs,
-automatic properties, batching, profiles, flag evaluation, retry, and
-persistence belong to each backend's delivery owner and are not
-byte-for-byte equivalent.
+Both backends share the fixed C API, typed property encoding, denylist behavior, and event/control-property privacy tests. Timestamps, UUIDs, automatic properties, batching, profiles, flag evaluation, retry, and persistence belong to each backend's delivery owner and are not byte-for-byte equivalent.
 
-`ph_reload_feature_flags()` re-evaluates flags after an identity or group
-change: native queues the refresh on the sender and blocks until it completes;
-WASM schedules a posthog-js reload.
+`ph_reload_feature_flags()` re-evaluates flags after an identity or group change: native queues the refresh on the sender and blocks until it completes; WASM schedules a posthog-js reload.
 
 ## Build
 
@@ -120,24 +102,11 @@ zig build fuzz         # fuzz the two network-facing parsers (JSON + HTTP)
 zig build run-example  # run the C quickstart
 ```
 
-`zig build live-contract` is intentionally separate: it sends a real event and
-reads a flag against a live project, so it needs `POSTHOG_API_KEY` (use a
-disposable one). Copy [`.env.example`](.env.example) to `.env` (gitignored) and
-run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or
-`scripts/live-contract.sh` elsewhere. HTTPS delivery works on all three desktops
-- WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux, needs `libssl-dev`).
+`zig build live-contract` is intentionally separate: it sends a real event and reads a flag against a live project, so it needs `POSTHOG_API_KEY` (use a disposable one). Copy [`.env.example`](.env.example) to `.env` (gitignored) and run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or `scripts/live-contract.sh` elsewhere. HTTPS delivery works on all three desktops - WinHTTP (Windows), Secure Transport (macOS), OpenSSL (Linux, needs `libssl-dev`).
 
-CI runs this same live contract on Windows, macOS, and Linux on every push to
-`main`, so each TLS backend is exercised end to end against a real project - not
-just compiled. The build and mock-transport suite run on all three platforms in
-CI; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the WASM
-parity harness run on Linux.
+CI runs this same live contract on Windows, macOS, and Linux on every push to `main`, so each TLS backend is exercised end to end against a real project - not just compiled. The build and mock-transport suite run on all three platforms in CI; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the WASM parity harness run on Linux.
 
-The WASM build requires [emsdk](https://emscripten.org) (auto-detected via
-`$EMSDK` or `~/emsdk`) and is skipped if emcc isn't found. Consuming the SDK
-from an Emscripten application - the source recipe, module ordering, and the
-pinned posthog-js contract test - is documented in
-[`wasm/README.md`](wasm/README.md).
+The WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`) and is skipped if emcc isn't found. Consuming the SDK from an Emscripten application - the source recipe, module ordering, and the pinned posthog-js contract test - is documented in [`wasm/README.md`](wasm/README.md).
 
 ### Using it
 
@@ -164,15 +133,11 @@ if (target.result.os.tag == .linux) {
 }
 ```
 
-The native SDK owns threads and mutexes and is not fork-safe after `ph_init()`.
-On POSIX, shut it down before `fork()` and initialize a fresh instance in each
-process that will emit events; do not call the inherited instance in the child.
+The native SDK owns threads and mutexes and is not fork-safe after `ph_init()`. On POSIX, shut it down before `fork()` and initialize a fresh instance in each process that will emit events; do not call the inherited instance in the child.
 
 ## Roadmap
 
-Cross-platform TLS (Windows/macOS/Linux), feature flags, offline spill, and
-signal-crash capture are in. Next: out-of-process crash handling with
-server-side symbolication, and crash-time timestamps. See [TODO.md](TODO.md).
+Cross-platform TLS (Windows/macOS/Linux), feature flags, offline spill, and signal-crash capture are in. Next: out-of-process crash handling with server-side symbolication, and crash-time timestamps. See [TODO.md](TODO.md).
 
 ## License
 
