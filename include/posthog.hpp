@@ -67,7 +67,9 @@ inline bool is_feature_enabled(const char *key, bool fallback = false) {
 inline void flush(int timeout_ms) { ph_flush(timeout_ms); }
 inline void shutdown() { ph_shutdown(); }
 
-/* RAII lifetime guard: init on construction, flush + shutdown on scope exit.
+/* RAII lifetime guard: init on construction, shutdown on scope exit.
+ * ph_shutdown drains the queue within its bounded request-timeout budget;
+ * call flush() first when exit must wait longer for a full drain.
  * `ok()` reports whether init succeeded. */
 class Session {
 public:

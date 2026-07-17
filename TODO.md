@@ -4,53 +4,54 @@
 
 - **Out-of-process `minidump_crash`.** In-process capture can't survive heap corruption and takes the loader lock during the per-frame module lookup (a crash *inside* the loader can stall the handler). The robust answer is a Crashpad-style out-of-process handler writing a minidump, symbolicated server-side by a separate **`posthog-crash`** service against a symbol store - that is where function *names* come from (we emit module+offset). Pick the backend at compile time. Prior art: [Breakpad](https://chromium.googlesource.com/breakpad/breakpad/), [Crashpad](https://chromium.googlesource.com/crashpad/crashpad/).
 - **Crash-time timestamps.** The replayed `$exception` is stamped at next-launch time, not when the crash happened. Record a wall-clock estimate in the crash record and inject it as the event `timestamp` at replay (needs an explicit-timestamp path through the serializer).
-- **macOS fault-PC and musl `backtrace()`.** The POSIX `sigaction` path now passes its real-fault integration test on both the Linux and macOS CI runners - a subprocess raises `SIGABRT`, our handler records it and chains to a host handler, and the record is decoded on replay (previously this was only compile-checked off-Windows). Two gaps remain: on macOS the faulting-instruction PC is not extracted (reading it through `uc_mcontext` faulted the arm64 handler, so we fall back to `backtrace()`; restore an alignment-safe read validated on real hardware), and glibc `backtrace()` is absent on musl/Alpine (document or guard).
+- **macOS fault-PC and musl `backtrace()`.** Two known gaps in the POSIX handler: on macOS the faulting-instruction PC is not extracted (reading it through `uc_mcontext` faulted the arm64 handler, so it falls back to `backtrace()`; restore an alignment-safe read validated on real hardware), and glibc `backtrace()` is absent on musl/Alpine (document or guard).
 
 ## Client-side drop reporting
 
-`on_stats` now emits a periodic native JSON snapshot broken down by reason. The
-remaining work is to decide whether an opt-in SDK health event should send that
-snapshot to PostHog itself. WASM delivery and loss accounting remain deliberately
-host-owned: posthog-js exposes no equivalent snapshot, so `on_stats` stays
-native-only and `ph_dropped_events()` stays zero rather than report partial truth.
+Decide whether an opt-in SDK health event should ship the `on_stats` snapshot
+(queue depth + drops broken down by reason) to PostHog itself. WASM delivery
+and loss accounting stay host-owned: posthog-js exposes no equivalent
+snapshot, so `on_stats` is native-only and `ph_dropped_events()` returns zero
+rather than report partial truth.
 
 ## TLS
 
-Each desktop links its own system TLS stack rather than vendoring a crypto
-library: WinHTTP (Windows), Secure Transport (macOS, `#if __APPLE__`), and the
-system OpenSSL (Linux, `libssl-dev`). All verify the server cert chain and
-hostname against the OS trust store. The socket, HTTP framing, and response
-parser are shared across the POSIX backends; only the handshake/read/write
-differs. The live-contract job runs on all three CI runners, so a push delivers
-a real event over each backend and proves them end to end.
+- **The BSDs have no TLS backend** - `ph_tls_available()` returns 0 and https:// is refused. Wire OpenSSL (or LibreSSL) there if it ever matters.
+- **macOS Secure Transport is deprecated** in favour of Network.framework. It works; migrating would silence the deprecation and gain async IO.
+- **Linux ships a hard OpenSSL dependency.** Fine for a Linux SDK (it's the de-facto system TLS), but a vendored or optional backend would suit a no-dependencies embed. A deliberate trade, not an oversight.
 
-Remaining:
-- **Other Unix (the BSDs)** has no backend - `ph_tls_available()` returns 0 and
-  https:// is refused. Wire OpenSSL (or LibreSSL) there too if it ever matters.
-- **macOS Secure Transport is deprecated** in favour of Network.framework. It
-  works, but a future migration would silence the deprecation and gain async IO.
-- **Linux ships a hard OpenSSL dependency.** Fine for a Linux SDK (it's the
-  de-facto system TLS), but a vendored/optional backend would suit a
-  no-dependencies embed; left as a deliberate trade, not an oversight.
+## Simplification candidates
 
-## Deliberately out of scope (don't re-litigate)
+Open questions, not defects - each trades a working mechanism for less
+surface:
 
-- **Elaborate on-disk run directories, lockfiles, and tiered cache pruning** (as full crash-reporting stacks carry): they exist to persist crash state + minidump attachments and to tell a crashed process from a running one. Our single bounded NDJSON spill plus a one-shot crash record is the right size for in-process `signal_crash`; richer on-disk state is a `minidump_crash` concern.
-- **Discarding 5xx**: we retry 5xx with backoff - the better default for a transient server blip. Keep it.
-- **Session replay**: no DOM/canvas from C, and a privacy liability. Excluded (noted as out of scope in DESIGN.md).
-- **WASM `ph_capture` returning `PH_OK` when the host finalizer drops an event**: capture is fire-and-forget on both backends - native `ph_capture` also returns `PH_OK` for events the sender later drops (denylist / `before_send` / ring overflow). The return means "accepted for delivery", not "delivered". Reporting a host privacy-stage drop as a caller error would break that parity and conflate a normal policy drop with a failure.
-- **Moving the reload re-entrancy guard before the async schedule** (`ph_reload_feature_flags`): the `ph__in_callback` / sender-thread guard exists to skip the blocking *wait* (which would deadlock on the sender), not the enqueue - a sender callback is meant to attach a refresh to the current job, and taking `g_ph.lock` briefly to schedule is safe because no callback runs while holding it. Keep the guard after the schedule.
-- **Reserving a reload-history slot before scheduling** (the `PH_ERR_FULL` path): unreachable in practice - coalescing plus supersession keep at most ~2 records `PENDING` against 8 slots, and the fallback (an untracked but harmless flag refresh) is benign. Not worth a reserve-then-schedule rework.
-- **A deterministic test for `post_body`'s shortened-timeout branch** (a second POST that *starts* after shutdown): the mock transport blocks in-thread, so driving it needs a two-POST-after-stop interleaving that hangs the join. The branch is hand-verified (`remaining_ms == 0` yields `-1`, otherwise a value in `[1, request_timeout_ms]`); left uncovered by choice.
-- **WASM per-request feature-flag reload status**: posthog-js exposes a fire-and-forget reload plus a global change listener, not completion correlated to one reload and evaluation context. Cached or local changes can fire the listener, quota failures may not fire it, and queued identity changes expose no generation. Keep enabled WASM returning `PH_ERR` and query tokens `UNKNOWN` until the host API provides a public per-reload completion primitive carrying failure and request/context identity; the existing void reload is the honest portable schedule-only API.
-
-## Keep strong (don't regress)
-
-Where posthog-c is deliberately stronger than other telemetry SDKs:
-- **Allocation-free native capture** - no `malloc`, wall-clock read, RNG, disk, or network on the caller thread. Preserve that invariant and do not describe the mutex-backed path as non-blocking or hard-real-time-safe. The common design allocates, hits an RNG (uuid + sampling), and runs `before_send` inline; we defer that work to the sender.
-- **Bounded drop-oldest ring** - predictable memory, versus an unbounded in-memory worker queue.
+- **Per-bridge-call host revalidation (WASM).** Every bridge call re-verifies the descriptor's method and live-config identity through `checked_client()`. Validating at init plus an explicit revalidate hook would be simpler and cheaper; the per-call check guards against accidental host reconfiguration mid-session (see the WASM host contract in DESIGN.md), not a hostile page.
+- **The public flag-reload token API.** `ph_reload_feature_flags_async` + `ph_get_feature_flag_reload_status` is surface no official PostHog SDK exposes, and WASM degrades it to `PH_ERR`/`UNKNOWN`. The internal coalescing/supersession stays regardless (the blocking reload needs it to be correct across identity changes); the rationale for the public form is in DESIGN.md. Demote it to internal if it sees no real use.
+- **Config surface.** `ph_config` is 25 fields; each is documented and defensible, but together they are already a mature-SDK surface. Resist further growth.
 
 ## Nice-to-have
 
 - **Model offline-spill as a transport** behind the `ph_transport` seam instead of special-casing it in the sender - the 429/quota hold would then compose as "route to the disk transport while blocked".
 - **Generated string<->enum converters** for public enums - cheap human-readable logging across the C interface.
+
+## Settled decisions
+
+Deliberate trades, recorded so they aren't re-opened by accident. Code-level
+review decisions (reload guard placement, reload-history slots, the
+`post_body` timeout branch, WASM reload-status details) live in AGENTS.md.
+
+- **No run directories, lockfiles, or tiered cache pruning** (as full crash-reporting stacks carry): one bounded NDJSON spill plus a one-shot crash record is the right size for in-process `signal_crash`; richer on-disk state is a `minidump_crash` concern.
+- **5xx is retried with backoff**, not discarded - the better default for a transient server blip.
+- **No session replay**: nothing to record from C, and a privacy liability.
+- **WASM `ph_capture` returns `PH_OK` even when the host finalizer drops the event**: capture is fire-and-forget on both backends and `PH_OK` means "accepted for delivery", not "delivered" - native behaves the same for denylist/`before_send`/ring drops.
+- **WASM `ph_reload_feature_flags_async` returns `PH_ERR`**: posthog-js exposes no per-reload completion carrying failure and request/context identity, so a token API there would lie; the void reload is the honest portable form (see `wasm/README.md`).
+
+## Keep strong (don't regress)
+
+Where posthog-c is stronger than the common telemetry-SDK design:
+
+- **Allocation-free native capture** - no `malloc`, wall-clock read, RNG, disk, or network on the caller thread. Preserve that invariant and do not describe the mutex-backed path as non-blocking or hard-real-time-safe. The common design allocates, hits an RNG (uuid + sampling), and runs `before_send` inline; we defer that work to the sender.
+- **Bounded drop-oldest ring** - predictable memory, versus an unbounded in-memory worker queue.
+- **One serializer, one blob parser, exact-byte batch tests** through the mock transport - wire-shape drift has nowhere to hide.
+- **Crash-handler discipline** - strict handler/replay separation, the async-signal-unsafe parts named in place (with the `backtrace` warm-up), altstack install/restore etiquette, no-replace record publication so a second crash cannot erase an unacknowledged first, and handler chaining on both platforms.
+- **CI rigor** - actions pinned by SHA, a 3-OS matrix plus a ReleaseSafe re-run, ASan/UBSan, parser fuzzing, a downstream-consumer build, and a live contract gated on the rest of the matrix that skips green on forks.

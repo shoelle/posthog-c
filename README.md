@@ -44,7 +44,7 @@ The equivalent through the header-only C++ wrapper:
 ```cpp
 #include "posthog.hpp"
 
-posthog::Session session(cfg); // ph_init here; flush + shutdown on scope exit
+posthog::Session session(cfg); // ph_init here; shutdown (bounded drain) on scope exit
 posthog::capture("editor_panel_opened",
                  posthog::Props().str("panel", "code").i64("count", 3));
 posthog::identify("user-123");
@@ -57,10 +57,13 @@ application's durable settings, then replace it with `ph_identify()` after sign
 in. `ph_reset()` deliberately rolls a new anonymous ID on logout; read it with
 `ph_get_distinct_id()` and persist it before the next launch.
 
-For WASM, initialize posthog-js through the supported host helper before calling
-`ph_init()`. The helper publishes a frozen, versioned descriptor containing the
-actual client reference, so named posthog-js instances work and Closure cannot
-rename the host ABI:
+## WASM
+
+The same C API compiles with Emscripten into a shim over a host-loaded
+posthog-js client: delivery, persistence, and browser enrichment stay in the
+JS SDK, and typed C properties serialize through the same encoder the native
+backend uses. Initialize posthog-js through the host helper before
+`ph_init()`:
 
 ```js
 import posthog from "posthog-js"
@@ -70,65 +73,15 @@ initPostHogC(posthog, {
   api_key: "phc_your_project_key",
   api_host: "https://us.i.posthog.com",
   distinct_id: installId,
-  person_profiles: "identified_only", // or "always" / "never"
-  preload_flags: true,
-  send_feature_flag_events: true,
-  release: "myapp@1.2.3",
-  posthog_config: { autocapture: false },
 })
 ```
 
-The helper has matching entry points for the common host module shapes:
-
-- `wasm/posthog-c-host.mjs` exports `initPostHogC` and
-  `initPostHogCAsync` for ESM.
-- `wasm/posthog-c-host.js` is both a CommonJS module and a plain script. It
-  exports the same functions from `require()` and publishes the frozen
-  `globalThis.PostHogC` object.
-
-Use `initPostHogC()` when the posthog-js library is loaded and the selected
-default or named client is still fresh. Use `initPostHogCAsync()` with a
-promise, an async loader, or an ESM
-module namespace:
-
-```js
-await initPostHogCAsync(() => import("posthog-js"), {
-  // ...the same host fields as above...
-})
-```
-
-The async form also accepts the official queueing snippet's `window.posthog`.
-That stub's `init()` does not return a client, so the helper waits for
-`posthog_config.loaded`, invokes any user-supplied `loaded` callback with its
-normal client argument and config binding, then validates and publishes the
-resulting live contract. It does not poll, impose a timeout, or choose how the
-posthog-js script is fetched. Do not call `ph_init()` or start an Emscripten
-factory whose `main()` calls it until the returned promise resolves.
-
-For a vendored or CDN-loaded classic-script setup, install the queueing
-snippet's loader stub, but replace its final `posthog.init(...)` call with the
-helper so posthog-c remains the sole initialization owner:
-
-```html
-<script src="/vendor/posthog-c-host.js"></script>
-<script>
-  const hostReady = PostHogC.initPostHogCAsync(window.posthog, hostSpec)
-  hostReady.then(function () { return createApp() })
-</script>
-```
-
-The C config must carry the same API key, normalized host, distinct ID, profile,
-flag, release, and GeoIP policy. `ph_init()` validates all of them before it
-commits callbacks or enabled state. A disabled C initialization performs no
-descriptor reads and makes no calls to the already-loaded posthog-js client.
-The synchronous helper requires a fresh default or named client; the async
-helper applies the same checks once a queued client loads. Both reject posthog-js's
-otherwise-silent reinitialization no-op, force the bootstrap ID to remain
-anonymous, and verify the live client config before publishing the
-descriptor. While the C SDK is initialized, do not use `client.set_config()` to
-replace the token, host, profile, flag, or `before_send` settings. Every bridge
-call rechecks those fields and fails closed if the validated privacy pipeline
-was changed; `ph_shutdown()` releases the module's pinned descriptor.
+The helper verifies the live client, then publishes a frozen descriptor that
+`ph_init()` - called with a matching C config - validates and pins; bridge
+calls fail closed if the host contract changes afterwards. Async and
+classic-script bootstraps, the config ownership split, the two
+privacy-scrubber stages, strict GeoIP opt-out, and the Emscripten build recipe
+are covered in [`wasm/README.md`](wasm/README.md).
 
 ### Backend contract
 
@@ -145,58 +98,17 @@ was changed; `ph_shutdown()` releases the module's pinned descriptor.
 | stats, dropped count | implemented by posthog-c | ignored / returns 0 |
 | `ph_flush`, `ph_shutdown` | flushes; shutdown gets one request-timeout drain budget, then spill/drop | no-op / releases shim state only |
 
-Both backends share the fixed C API, typed property encoding, denylist behavior,
-and event/control-property privacy tests. Timestamps, UUIDs, automatic
-properties, batching, profiles, flag evaluation, retry, and persistence belong
-to each backend's delivery owner and are not byte-for-byte equivalent.
+Both backends share the fixed C API, typed property encoding, denylist
+behavior, and event/control-property privacy tests. Timestamps, UUIDs,
+automatic properties, batching, profiles, flag evaluation, retry, and
+persistence belong to each backend's delivery owner and are not
+byte-for-byte equivalent.
 
-Native `ph_reload_feature_flags_async()` coalesces work on the sender and
-returns a bounded-history request ID whose status distinguishes pending,
-success, failure, and an identity/group context that superseded the request.
-The legacy `ph_reload_feature_flags()` remains the blocking wrapper. posthog-js
-does not expose compatible per-request completion, so enabled WASM returns
-`PH_ERR` from the asynchronous form and keeps the existing host reload call in
-the void wrapper.
-
-WASM configuration is intentionally split by owner. The C shim owns `enabled`,
-the C `before_send`/denylist stage, `on_log`, super properties, and whether a
-flag read asks posthog-js to emit an exposure. The host helper owns posthog-js
-bootstrap, identity/profile/preload parity, release enrichment, and the final
-browser scrubber. Native delivery knobs (`flush_at`, intervals, batch/queue and
-body caps, request timeout/retries, gzip, offline/crash settings, numeric rate
-limit, and stats callbacks) are ignored on WASM because posthog-js owns that
-pipeline.
-
-The two scrubber stages see different data. The C hook runs first and sees only
-bounded C caller/super/control properties. `final_before_send` and
-`final_property_denylist` passed to `initPostHogC()` run later, after posthog-js
-adds browser properties; they are the privacy boundary for automatic browser
-enrichment. Removing the required event name or token, or changing/removing the
-SDK-selected distinct ID, drops the whole event. The validated person-profile
-bit and a configured GeoIP event opt-out are restored after those hooks, so
-neither policy can be weakened accidentally. On native, `before_send` likewise
-runs before optional automatic `$os`, `arch`, and `release` enrichment; use the
-C denylist to suppress those automatic fields. SDK-owned identity, library, and
-person-profile fields cannot be replaced by caller, super, or scrubber props.
-
-For strict WASM GeoIP opt-out, route posthog-js through a proxy that injects
-`geoip_disable: true` into `/flags/` requests, then declare that capability:
-
-```js
-initPostHogC(posthog, {
-  // ...matching fields above...
-  disable_geoip: true,
-  geoip_flags: "proxy-inject-v1",
-  flags_api_host: "https://flags-proxy.example",
-})
-```
-
-The helper forces `$geoip_disable: true` on events and rejects initialization
-without that explicit flags capability and a separately specified
-`flags_api_host`. It never derives the flags route from `api_host`; it normalizes
-and attests the exact proxy base, then fails closed if the live posthog-js config
-changes it. The injection capability remains a host assertion: the C/WASM
-module cannot inspect or enforce reverse-proxy behavior itself.
+Native `ph_reload_feature_flags_async()` coalesces refreshes on the sender and
+returns a request id you can poll with `ph_get_feature_flag_reload_status()`;
+the blocking `ph_reload_feature_flags()` wraps it. On WASM the async form
+returns `PH_ERR` (posthog-js exposes no per-request completion) and the void
+form schedules a posthog-js reload.
 
 ## Build
 
@@ -219,52 +131,15 @@ run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or
 
 CI runs this same live contract on Windows, macOS, and Linux on every push to
 `main`, so each TLS backend is exercised end to end against a real project - not
-just compiled. The build and mock-transport suite run on all three platforms on
-every push; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the
-WASM parity harness run on Linux.
+just compiled. The build and mock-transport suite run on all three platforms in
+CI; ASan/UBSan, the parser fuzzers, a downstream-consumer build, and the WASM
+parity harness run on Linux.
 
-WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`); skipped if emcc isn't found.
-
-The real host-finalizer contract is kept separate from the fast mock harness
-and pins the exact posthog-js version used by CI:
-
-```sh
-cd tests/wasm/host-contract
-npm ci --ignore-scripts --no-audit --no-fund
-cd ../../..
-zig build test-wasm-host
-```
-
-For source consumption with Emscripten, [`wasm/posthog-wasm.rsp`](wasm/posthog-wasm.rsp)
-is the canonical source-and-compile-flag recipe. Invoke it from the posthog-c
-checkout root, then add your application's sources and link/runtime choices:
-
-```sh
-emcc @wasm/posthog-wasm.rsp /absolute/path/to/app.c -O2 -o app.js
-```
-
-The recipe keeps the backend on strict C11 and is also what `zig build
-test-wasm` consumes. The standalone consumer fixture pairs
-[`main.c`](tests/wasm/consumer/main.c) with
-[`run.cjs`](tests/wasm/consumer/run.cjs) to load the CommonJS/classic helper
-before a modularized Emscripten factory.
-
-An Emscripten `--pre-js` file cannot import the ESM helper. Put that ordering in
-the host entry module instead, and instantiate the C/WASM module only after the
-descriptor is ready:
-
-```js
-import posthog from "posthog-js"
-import { initPostHogCAsync } from "./posthog-c-host.mjs"
-
-await initPostHogCAsync(posthog, hostSpec)
-const { default: createApp } = await import("./app.mjs")
-await createApp()
-```
-
-For a C++ application, compile the SDK recipe as C in a separate step, then
-link those objects into the C++ module; the recipe's intentional `-std=c11`
-flag is not a C++ driver flag.
+The WASM build requires [emsdk](https://emscripten.org) (auto-detected via
+`$EMSDK` or `~/emsdk`) and is skipped if emcc isn't found. Consuming the SDK
+from an Emscripten application - the source recipe, module ordering, and the
+pinned posthog-js contract test - is documented in
+[`wasm/README.md`](wasm/README.md).
 
 ### Using it
 

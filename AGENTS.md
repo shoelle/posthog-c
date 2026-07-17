@@ -129,3 +129,31 @@ Windows, macOS, and Linux on pushes to `main`, exercising each TLS backend
 - async-signal-safety on the `signal_crash` fault path (no malloc/lock/stdio in
   the handler; see [`ph_crash.c`](src/ph_crash.c))
 - unbounded growth / missing fixed caps
+
+## Settled code-level decisions (don't re-litigate)
+
+Review keeps re-flagging these; the current shape is intentional. Product-level
+settled decisions live in TODO.md ("Settled decisions").
+
+- **The reload re-entrancy guard stays after the async schedule**
+  (`ph_reload_feature_flags`): the `ph__in_callback` / sender-thread guard
+  exists to skip the blocking *wait* (which would deadlock on the sender), not
+  the enqueue - a sender callback is meant to attach a refresh to the current
+  job, and taking `g_ph.lock` briefly to schedule is safe because no callback
+  runs while that lock is held.
+- **No reserve-then-schedule rework for the reload history** (the
+  `PH_ERR_FULL` path): unreachable in practice - coalescing plus supersession
+  keep at most ~2 records `PENDING` against 8 slots - and the fallback (an
+  untracked but harmless flag refresh) is benign.
+- **`post_body`'s shortened-timeout branch has no deterministic test** (a
+  second POST that *starts* after shutdown): the mock transport blocks
+  in-thread, so driving the branch needs a two-POST-after-stop interleaving
+  that hangs the join. Hand-verified (`remaining_ms == 0` yields `-1`,
+  otherwise a value in `[1, request_timeout_ms]`); left uncovered by choice.
+- **WASM keeps `ph_reload_feature_flags_async` returning `PH_ERR` and query
+  tokens `UNKNOWN`**: posthog-js exposes a fire-and-forget reload plus a
+  global change listener, not completion correlated to one reload and
+  evaluation context - cached/local changes can fire the listener, quota
+  failures may not, and queued identity changes expose no generation. Revisit
+  only if posthog-js ships a public per-reload completion primitive carrying
+  failure and request/context identity.
