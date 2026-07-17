@@ -1,10 +1,27 @@
 # posthog-c on WASM
 
-The WASM backend behind the shared C API: `src/ph_wasm.c` compiles with Emscripten and bridges to a host-initialized posthog-js client. This document covers everything WASM-specific - bootstrapping, the validated host contract, configuration ownership, privacy staging, GeoIP, and the build recipe. The C API itself is identical to native; the behavioral differences are summarized in the backend-contract table in the [main README](../README.md), and the design reasoning lives in [DESIGN.md](../DESIGN.md).
+The WASM backend behind the shared C API: `src/ph_wasm.c` compiles with Emscripten and bridges to a host-initialized posthog-js client. This document covers everything WASM-specific - bootstrapping, the validated host contract, configuration ownership, privacy staging, GeoIP, and the build recipe. The C API itself is identical to native; the field-by-field backend contract is tabulated below, and the design reasoning lives in [DESIGN.md](../DESIGN.md).
 
 ## How the backend works
 
 There is no network stack in the module: posthog-js owns batching, retry, persistence, timestamps, UUIDs, automatic browser properties, and flag evaluation. The shim validates the descriptor published by the host helper, pins it, serializes `ph_props` with the same encoder the native serializer uses - so a given property set produces byte-identical property JSON on both backends - and calls the pinned client synchronously. `ph_flush()` is a no-op and `ph_shutdown()` releases only shim-owned state.
+
+## Backend contract
+
+| Behavior | Native | WASM |
+|---|---|---|
+| Delivery | SDK sender, retry, gzip, offline spill | host-loaded posthog-js |
+| `ph_capture` | bounded enqueue; no heap/wall clock/RNG | synchronous JS bridge; may allocate |
+| privacy stages | C denylist + `before_send`; sender thread (exceptions pre-enqueue) | C denylist + `before_send` on caller, then host final scrub after browser enrichment |
+| flags | SDK `/flags/` cache | posthog-js flag cache |
+| `release` | optional serializer enrichment | host finalizer enrichment |
+| `disable_geoip` | forced on events and `/flags/` | forced on events; `/flags/` requires an explicit proxy host and policy |
+| flag exposure policy | SDK emits deduped event | passed as per-read `{ send_event }` |
+| numeric rate limit | posthog-c token bucket | ignored; descriptor acknowledges posthog-js ownership |
+| stats, dropped count | implemented by posthog-c | ignored / returns 0 |
+| `ph_flush`, `ph_shutdown` | flushes; shutdown gets one request-timeout drain budget, then spill/drop | no-op / releases shim state only |
+
+Both backends share the fixed C API, typed property encoding, denylist behavior, and event/control-property privacy tests. Timestamps, UUIDs, automatic properties, batching, profiles, flag evaluation, retry, and persistence belong to each backend's delivery owner and are not byte-for-byte equivalent.
 
 ## Bootstrapping posthog-js
 

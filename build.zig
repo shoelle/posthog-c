@@ -53,7 +53,7 @@ const test_sources = [_][]const u8{
 // static archive embeds libssl.so/libcrypto.so as archive members, which LLD
 // warns about (harmless, but noisy). A downstream consumer of the static lib
 // links -lssl/-lcrypto itself - the standard contract for a static library with
-// a third-party shared dependency (see "Using it" in README.md).
+// a third-party shared dependency (see "Setting up a Zig dependency" in README.md).
 fn linkPlatform(step: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, final_link: bool) void {
     const m = step.root_module;
     switch (target.result.os.tag) {
@@ -137,7 +137,7 @@ fn findNode(b: *std.Build) ?[]const u8 {
 // Internal factory used by build() below. External projects should NOT call this
 // (or addIncludes) via @import: b.path() resolves against the caller's build root,
 // so it only works in-repo. To consume posthog-c, add it as a dependency and link
-// `dep.artifact("posthog")` - see "Using it" in README.md.
+// `dep.artifact("posthog")` - see "Setting up a Zig dependency" in README.md.
 fn create(
     b: *std.Build,
     target: std.Build.ResolvedTarget,

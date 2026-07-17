@@ -11,9 +11,9 @@ posthog-c is an unofficial, embeddable [PostHog](https://posthog.com) SDK for na
 ## Highlights
 
 - **Hot-path-safe capture.** No allocation, wall-clock read, RNG, disk, or network on the calling thread - a bounded copy under two short mutexes. (Not lock-free, and honest about it: see [DESIGN.md](DESIGN.md).)
-- **Zero third-party dependencies.** Rides PostHog's raw HTTP API over each platform's own TLS - WinHTTP, Secure Transport, OpenSSL. The one vendored file is a small deflate encoder for gzip bodies.
+- **Zero third-party dependencies.** Rides PostHog's raw HTTP API over each platform's own TLS - WinHTTP, Secure Transport, OpenSSL.
 - **Built for bad networks.** Bounded drop-oldest ring, retries with backoff, 429/Retry-After and quota backpressure, and an on-disk offline queue that replays on reconnect.
-- **Crash and error tracking.** Structured `$exception` events, plus an opt-in signal/SEH crash handler that persists a fatal crash and ships it on the next launch.
+- **Crash and error tracking.** Structured PostHog `$exception` events, plus an opt-in signal/SEH crash handler that persists a fatal crash and ships it on the next launch.
 - **Feature flags.** Remote evaluation with a local cache, JSON payloads, and deduped exposure events.
 - **Privacy-first.** Anonymous by default, a `before_send` scrubber, a property denylist, and a master kill switch.
 - **Native and WASM.** The same C API in the browser, delegating delivery to host-loaded posthog-js.
@@ -104,30 +104,23 @@ initPostHogC(posthog, {
 })
 ```
 
-The helper verifies the live client, then publishes a frozen descriptor that `ph_init()` - called with a matching C config - validates and pins; bridge calls fail closed if the host contract changes afterwards. Async and classic-script bootstraps, the config ownership split, the two privacy-scrubber stages, strict GeoIP opt-out, and the Emscripten build recipe are covered in [`wasm/README.md`](wasm/README.md).
+The helper verifies the live client and publishes a frozen descriptor; `ph_init()` - called with a matching C config - validates and pins it, and bridge calls fail closed if the host contract changes afterwards. Bootstrap variants (async loaders, the queueing snippet, classic scripts) and the full integration guide live in [`wasm/README.md`](wasm/README.md).
 
-### Backend contract
+### What's different on WASM
 
-| Behavior | Native | WASM |
-|---|---|---|
-| Delivery | SDK sender, retry, gzip, offline spill | host-loaded posthog-js |
-| `ph_capture` | bounded enqueue; no heap/wall clock/RNG | synchronous JS bridge; may allocate |
-| privacy stages | C denylist + `before_send`; sender thread (exceptions pre-enqueue) | C denylist + `before_send` on caller, then host final scrub after browser enrichment |
-| flags | SDK `/flags/` cache | posthog-js flag cache |
-| `release` | optional serializer enrichment | host finalizer enrichment |
-| `disable_geoip` | forced on events and `/flags/` | forced on events; `/flags/` requires an explicit proxy host and policy |
-| flag exposure policy | SDK emits deduped event | passed as per-read `{ send_event }` |
-| numeric rate limit | posthog-c token bucket | ignored; descriptor acknowledges posthog-js ownership |
-| stats, dropped count | implemented by posthog-c | ignored / returns 0 |
-| `ph_flush`, `ph_shutdown` | flushes; shutdown gets one request-timeout drain budget, then spill/drop | no-op / releases shim state only |
+Same C API, different delivery owner - native runs the whole pipeline itself, WASM stays a thin bridge over the page's posthog-js. In practice:
 
-Both backends share the fixed C API, typed property encoding, denylist behavior, and event/control-property privacy tests. Timestamps, UUIDs, automatic properties, batching, profiles, flag evaluation, retry, and persistence belong to each backend's delivery owner and are not byte-for-byte equivalent.
+- **Capture is a synchronous JS call.** The native hot-path guarantee does not apply.
+- **Delivery knobs are native-only.** Batching, timeouts, retries, gzip, offline spill, rate limiting, and drop/stats counters belong to posthog-js on WASM; `ph_flush()` is a no-op and `ph_shutdown()` just releases the bridge.
+- **Privacy scrubs in two stages.** Both backends run your C denylist + `before_send` and shape properties identically (same serializer); WASM adds a final host-side scrub after posthog-js's browser enrichment.
+- **Flags work on both.** Native keeps its own `/flags/` cache; WASM reads posthog-js's. `ph_reload_feature_flags()` blocks on native, schedules a reload on WASM.
+- **Envelopes are equivalent, not byte-identical.** Timestamps, UUIDs, and automatic properties come from whichever side delivers.
 
-`ph_reload_feature_flags()` re-evaluates flags after an identity or group change: native queues the refresh on the sender and blocks until it completes; WASM schedules a posthog-js reload.
+The field-by-field contract - GeoIP, release enrichment, exposure events, and the rest - is tabulated in [`wasm/README.md`](wasm/README.md).
 
 ## Build
 
-Requires [Zig](https://ziglang.org) 0.16.0 - the only toolchain, and it brings its own C compiler.
+Builds with [Zig](https://ziglang.org) 0.16.0 out of the box. Ask an agent to adapt it to your toolchain of choice.
 
 ```sh
 zig build              # static lib (zig-out/lib) + headers + examples
@@ -139,9 +132,8 @@ zig build run-example  # run the C quickstart
 
 The WASM build requires [emsdk](https://emscripten.org) (auto-detected via `$EMSDK` or `~/emsdk`) and is skipped if emcc isn't found. Consuming the SDK from an Emscripten application - the source recipe, module ordering, and the pinned posthog-js contract test - is documented in [`wasm/README.md`](wasm/README.md).
 
-### Using it
+### Setting up a Zig dependency
 
-Add posthog-c as a Zig dependency:
 
 ```zig
 // your build.zig.zon
@@ -166,16 +158,6 @@ if (target.result.os.tag == .linux) {
 
 The native SDK owns threads and mutexes and is not fork-safe after `ph_init()`. On POSIX, shut it down before `fork()` and initialize a fresh instance in each process that will emit events; do not call the inherited instance in the child.
 
-## How it's tested
-
-Every push builds and runs the mock-transport suite on Windows, macOS, and Linux; ASan/UBSan, parser fuzzing, a downstream Zig-consumer build, and the WASM parity harness run on Linux. Pushes to `main` add the **live contract**: each of the three desktops delivers a real event and reads a real flag against a live PostHog project, so every TLS backend - WinHTTP, Secure Transport, OpenSSL - is proven end to end, not just compiled.
-
-Run the live contract yourself with a disposable `POSTHOG_API_KEY`: copy [`.env.example`](.env.example) to `.env` (gitignored) and run [`scripts/live-contract.ps1`](scripts/live-contract.ps1) on Windows or `scripts/live-contract.sh` elsewhere.
-
-## Roadmap
-
-Cross-platform TLS (Windows/macOS/Linux), feature flags, offline spill, and signal-crash capture are in. Next: out-of-process crash handling with server-side symbolication, and crash-time timestamps. See [TODO.md](TODO.md).
-
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE)
